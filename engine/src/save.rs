@@ -17,11 +17,13 @@ pub struct Settings {
     /// 0..=MAX_VOLUME
     pub music_volume: u32,
     pub sound_volume: u32,
+    /// The installed pack to run when none is named.
+    pub last_pack: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { fullscreen: false, vsync: true, music_volume: MAX_VOLUME, sound_volume: MAX_VOLUME }
+        Settings { fullscreen: false, vsync: true, music_volume: MAX_VOLUME, sound_volume: MAX_VOLUME, last_pack: None }
     }
 }
 
@@ -57,10 +59,34 @@ fn write(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
     std::fs::write(path, serde_json::to_vec_pretty(value)?)
 }
 
+/// SDL's per-user preferences directory, or the working directory if there isn't one.
+pub fn pref_dir() -> PathBuf {
+    sdl3::filesystem::get_pref_path("", "duperhex").unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn settings_path() -> PathBuf {
+    pref_dir().join("settings.json")
+}
+
+/// The installed pack last installed or run by id.
+pub fn last_pack() -> Option<String> {
+    read::<Settings>(&settings_path()).last_pack
+}
+
+/// Remembers an installed pack as the one to run when none is named.
+pub fn set_last_pack(id: &str) {
+    let path = settings_path();
+    let mut settings: Settings = read(&path);
+    settings.last_pack = Some(id.into());
+    if let Err(e) = write(&path, &settings) {
+        eprintln!("saving {}: {e}", path.display());
+    }
+}
+
 impl Save {
     pub fn load(pack_id: &str) -> Save {
-        let dir = sdl3::filesystem::get_pref_path("", "duperhex").unwrap_or_else(|_| PathBuf::from("."));
-        let settings_path = dir.join("settings.json");
+        let dir = pref_dir();
+        let settings_path = settings_path();
         let progress_path = dir.join("saves").join(format!("{pack_id}.json"));
         let mut settings: Settings = read(&settings_path);
         settings.music_volume = settings.music_volume.min(MAX_VOLUME);

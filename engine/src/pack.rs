@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io::Read;
+use std::path::Path;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -575,12 +576,17 @@ impl Pack {
     }
 
     /// Loads a pack for the rest of the program's life, and its media files.
-    pub fn load(path: &str) -> Result<(&'static Pack, Files), Error> {
-        let (pack, files) = Self::read(path).ctx(path)?;
+    pub fn load(path: &Path) -> Result<(&'static Pack, Files), Error> {
+        let (pack, files) = Self::read(path)?;
         Ok((Box::leak(Box::new(pack)), files))
     }
 
-    fn read(path: &str) -> Result<(Pack, Files), Error> {
+    /// Reads and checks a pack.
+    pub fn read(path: &Path) -> Result<(Pack, Files), Error> {
+        Self::read_unnamed(path).ctx(path.display())
+    }
+
+    fn read_unnamed(path: &Path) -> Result<(Pack, Files), Error> {
         let mut zip = std::fs::File::open(path)
             .map_err(|e| Error(e.to_string()))
             .and_then(|f| zip::ZipArchive::new(f).map_err(|e| Error(e.to_string())))?;

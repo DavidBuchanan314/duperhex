@@ -2,6 +2,7 @@ mod audio;
 mod debug;
 mod game;
 mod ids;
+mod installed;
 mod pack;
 mod platform;
 mod render;
@@ -13,6 +14,7 @@ mod weighted;
 mod world;
 
 use std::error::Error;
+use std::path::PathBuf;
 
 use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
@@ -45,18 +47,24 @@ fn main() {
 }
 
 #[cfg(debug_assertions)]
-const USAGE: &str = "usage: duperhex PACK.zip [LEVEL_ID] [--speed X] [--fps]";
+const USAGE: &str = "usage: duperhex [PACK.zip | --pack ID] [--level ID] [--speed X] [--fps]
+       duperhex --install PACK.zip";
 #[cfg(not(debug_assertions))]
-const USAGE: &str = "usage: duperhex PACK.zip [--speed X] [--fps]";
+const USAGE: &str = "usage: duperhex [PACK.zip | --pack ID] [--speed X] [--fps]
+       duperhex --install PACK.zip";
 
 fn help() -> String {
     let mut s = format!(
         "{USAGE}
 
 Arguments:
-  PACK.zip      asset pack produced by the extractor
+  PACK.zip      asset pack produced by the extractor (default: the latest installed)
 
 Options:
+  --install PACK.zip
+                check a pack and install it for later runs, replacing any installed pack
+                with the same id, then exit
+  --pack ID     run the installed pack with this id
   --speed X     game speed multiplier, from {} to {} (default 1)
   --fps         show a frame rate counter
   -h, --help    print this help and exit",
@@ -66,8 +74,8 @@ Options:
     if cfg!(debug_assertions) {
         s += "
 
-Debug arguments (debug builds only):
-  LEVEL_ID      level to start in directly, skipping the menus
+Debug options (debug builds only):
+  --level ID    level to start in directly, skipping the menus
 
 Debug environment variables (debug builds only):
   DUPERHEX_SHOT=DIR:T1,T2,...    save a screenshot to DIR at each tick time, then exit
@@ -78,17 +86,28 @@ Debug environment variables (debug builds only):
     s
 }
 
-/// The command line: the pack, a level to start in (debug builds only), how fast the game runs,
-/// and whether to show the frame rate.
+/// Which pack to run.
+enum PackChoice {
+    Path(PathBuf),
+    /// An installed pack, by id or else the latest.
+    Installed(Option<String>),
+}
+
+/// The command line: a pack to install, or else the pack to run, a level to start in (debug
+/// builds only), how fast the game runs, and whether to show the frame rate.
 struct Args {
-    pack: String,
+    install: Option<PathBuf>,
+    pack: PackChoice,
     level: Option<String>,
     speed: f64,
     show_fps: bool,
 }
 
 fn args() -> Result<Args, String> {
-    let mut positional = Vec::new();
+    let mut path = None;
+    let mut id = None;
+    let mut install = None;
+    let mut level = None;
     let mut speed = 1.0;
     let mut show_fps = false;
     let mut it = std::env::args().skip(1);
@@ -96,6 +115,12 @@ fn args() -> Result<Args, String> {
         if a == "-h" || a == "--help" {
             println!("{}", help());
             std::process::exit(0);
+        } else if a == "--install" {
+            install = Some(PathBuf::from(it.next().ok_or(USAGE)?));
+        } else if a == "--pack" {
+            id = Some(it.next().ok_or(USAGE)?);
+        } else if a == "--level" && cfg!(debug_assertions) {
+            level = Some(it.next().ok_or(USAGE)?);
         } else if a == "--speed" {
             let v = it.next().ok_or(USAGE)?;
             speed = v.parse().map_err(|_| format!("--speed: not a number: {v}"))?;
@@ -104,22 +129,35 @@ fn args() -> Result<Args, String> {
             }
         } else if a == "--fps" {
             show_fps = true;
+        } else if a.starts_with('-') || path.is_some() {
+            return Err(USAGE.into());
         } else {
-            positional.push(a);
+            path = Some(PathBuf::from(a));
         }
     }
-    let mut positional = positional.into_iter();
-    let pack = positional.next().ok_or(USAGE)?;
-    let level = if cfg!(debug_assertions) { positional.next() } else { None };
-    if positional.next().is_some() {
-        return Err(USAGE.into());
-    }
-    Ok(Args { pack, level, speed, show_fps })
+    let pack = match (path, id) {
+        (Some(_), Some(_)) => return Err(USAGE.into()),
+        (Some(path), None) => PackChoice::Path(path),
+        (None, id) => PackChoice::Installed(id),
+    };
+    Ok(Args { install, pack, level, speed, show_fps })
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
     let args = args()?;
-    let (pack, files) = pack::Pack::load(&args.pack)?;
+    if let Some(path) = &args.install {
+        let (id, dest) = installed::install(path)?;
+        println!("installed pack {id:?} to {}", dest.display());
+        return Ok(());
+    }
+    let (path, chosen) = match args.pack {
+        PackChoice::Path(path) => (path, None),
+        PackChoice::Installed(id) => (installed::find(id.as_deref())?, id),
+    };
+    let (pack, files) = pack::Pack::load(&path)?;
+    if let Some(id) = chosen {
+        save::set_last_pack(&id);
+    }
     let start = match &args.level {
         Some(id) => Some(pack.level(id).ok_or_else(|| format!("no level {id:?}"))?),
         None => None,
