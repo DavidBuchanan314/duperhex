@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "duperhex-extractor"
+version = "0.1.0"
+description = "Extract an asset pack from an installed copy of Super Hexagon"
+requires-python = ">=3.10"
+dependencies = [
+    "angr",
+    "capstone",
+    "networkx",
+    "pyelftools",
+    "unicorn",
+]
+
+[project.scripts]
+duperhex-extract = "extract:main"
+
+[tool.setuptools]
+py-modules = ["content", "emu", "extract", "levels", "logic", "symbolic", "timeline"]

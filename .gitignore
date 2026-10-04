@@ -1,2 +1,4 @@
 __pycache__/
 pack.zip
+build/
+*.egg-info/

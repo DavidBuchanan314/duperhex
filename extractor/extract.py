@@ -3,8 +3,6 @@
 
     extract.py GAME_DIR OUT.zip
 
-Requires the Python packages unicorn, pyelftools and angr.
-
 GAME_DIR is the game's install directory (containing SuperHexagon and data/). Data that lives in
 code is recovered by emulating the game's own functions (see emu.py), and the game logic by lifting
 it symbolically (see logic.py). Struct layouts and the remaining tables in content.py are specific
