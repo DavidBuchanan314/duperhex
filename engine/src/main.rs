@@ -22,7 +22,7 @@ use sdl3::render::{FPoint, FRect, ScaleMode, Texture, Vertex, VertexIndices};
 use game::Key;
 use world::TICK_RATE;
 
-/// Longest stretch of real time a frame may simulate; longer stalls are skipped.
+/// Longest stretch of real time a frame may simulate; the rest of a longer stall is skipped.
 const MAX_FRAME_TICKS: f64 = 10.0;
 /// Antialiasing: the scene is drawn at 2^SS_HALVINGS times the window resolution and halved with
 /// linear filtering until it fits, each halving averaging 2x2 pixels.
@@ -167,7 +167,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         let now = platform::ticks_ns();
         if to_sim(now, base) - g.world().t() > MAX_FRAME_TICKS * speed {
-            base = now - (g.world().t() * 1e9 / (TICK_RATE * speed)) as u64;
+            base = now - ((g.world().t() + MAX_FRAME_TICKS * speed) * 1e9 / (TICK_RATE * speed)) as u64;
         }
         let target = to_sim(now, base);
 
