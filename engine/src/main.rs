@@ -181,16 +181,16 @@ fn run() -> Result<(), Box<dyn Error>> {
             let color = render::fcolor(t.color);
             t.pts.map(|(x, y)| Vertex { position: FPoint::new((x * k) as f32, (y * k) as f32), color, tex_coord: FPoint::new(0.0, 0.0) })
         }));
+        // text goes on top at the window's resolution: its glyphs are already antialiased, and
+        // supersampled ones would be too big for the atlas
         text_verts.clear();
-        atlas.build(&font, &gui.arena, &gui.texts, k, &mut text_verts);
-        let atlas_tex = &atlas.tex;
+        atlas.build(&font, &gui.arena, &gui.texts, h as f64 / ui::GUI_H, &mut text_verts);
         let draw = |c: &mut sdl3::render::WindowCanvas| {
             c.set_draw_color(scene.clear);
             c.clear();
             // drawing errors only lose a frame
             c.render_geometry(&scene.verts, None, VertexIndices::Sequential).ok();
             c.render_geometry(&gui_verts, None, VertexIndices::Sequential).ok();
-            c.render_geometry(&text_verts, Some(atlas_tex), VertexIndices::Sequential).ok();
         };
         if ss.targets.is_empty() {
             draw(&mut canvas);
@@ -204,6 +204,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             canvas.copy(ss.targets.last().unwrap(), None, FRect::new(0.0, 0.0, w as f32, h as f32))?;
         }
+        canvas.render_geometry(&text_verts, Some(&atlas.tex), VertexIndices::Sequential).ok();
         if dbg.shoot(&canvas, g.world().t()) {
             break 'run;
         }

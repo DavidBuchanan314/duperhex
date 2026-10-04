@@ -111,6 +111,8 @@ pub struct Atlas<'a> {
     x: i32,
     y: i32,
     row_h: i32,
+    /// Bumped each time the atlas is cleared.
+    generation: u32,
     rgba: Vec<u8>,
 }
 
@@ -118,7 +120,7 @@ impl<'a> Atlas<'a> {
     pub fn new(creator: &'a TextureCreator<WindowContext>) -> Result<Atlas<'a>, sdl3::render::TextureValueError> {
         let mut tex = creator.create_texture_static(PixelFormat::RGBA32, ATLAS, ATLAS)?;
         tex.set_blend_mode(BlendMode::Blend);
-        Ok(Atlas { tex, glyphs: HashMap::new(), x: 0, y: 0, row_h: 0, rgba: Vec::new() })
+        Ok(Atlas { tex, glyphs: HashMap::new(), x: 0, y: 0, row_h: 0, generation: 0, rgba: Vec::new() })
     }
 
     fn glyph(&mut self, font: &Font, c: char, px: f32) -> Option<&Glyph> {
@@ -135,8 +137,9 @@ impl<'a> Atlas<'a> {
                     self.row_h = 0;
                 }
                 if self.y + h > ATLAS as i32 {
-                    // full: start again (only happens after many window resizes)
+                    // full: start again (after many window resizes, or a huge window)
                     self.glyphs.clear();
+                    self.generation += 1;
                     self.x = 0;
                     self.y = 0;
                     self.row_h = 0;
@@ -158,6 +161,18 @@ impl<'a> Atlas<'a> {
 
     /// Appends the text's triangles to `out`, `k` pixels per GUI unit.
     pub fn build(&mut self, font: &Font, arena: &str, items: &[TextItem], k: f64, out: &mut Vec<Vertex>) {
+        let start = out.len();
+        let generation = self.generation;
+        self.build_once(font, arena, items, k, out);
+        if self.generation != generation {
+            // the atlas filled and was cleared part way through, so glyphs already emitted may
+            // have been overwritten: lay it all out again into the fresh atlas
+            out.truncate(start);
+            self.build_once(font, arena, items, k, out);
+        }
+    }
+
+    fn build_once(&mut self, font: &Font, arena: &str, items: &[TextItem], k: f64, out: &mut Vec<Vertex>) {
         let n = ATLAS as f32;
         for it in items {
             let px = it.size.em() * k as f32;
