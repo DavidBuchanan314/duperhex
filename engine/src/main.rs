@@ -91,6 +91,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut canvas = window.into_canvas();
     let audio = audio::Audio::new(&sdl, pack, files, args.speed)?;
     let mut events = sdl.event_pump()?;
+    let mouse = sdl.mouse();
     let creator = canvas.texture_creator();
     let mut atlas = text::Atlas::new(&creator)?;
     let mut ss = Supersample { targets: Vec::new(), size: (0, 0) };
@@ -117,6 +118,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         if g.take_display_changed() {
             let s = &g.save().settings;
             canvas.window_mut().set_fullscreen(s.fullscreen).ok();
+            mouse.show_cursor(!s.fullscreen);
             platform::set_vsync(&mut canvas, s.vsync);
         }
         let now = platform::ticks_ns();
