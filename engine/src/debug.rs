@@ -5,6 +5,8 @@
 //!   S(elect) E(sc) C(lear), or - for none.
 //! - `DUPERHEX_TRACE` prints the player's state and the pulse every frame.
 //! - `DUPERHEX_GOD` makes the player immune to walls.
+//!
+//! Release builds ignore them all.
 
 use std::env;
 
@@ -26,6 +28,9 @@ pub struct Debug {
 
 impl Debug {
     pub fn from_env() -> Debug {
+        if !cfg!(debug_assertions) {
+            return Debug { trace: false, god: false, shots: vec![], shot_dir: String::new(), input: vec![], held: Held::default() };
+        }
         let (shot_dir, mut shots) = match env::var("DUPERHEX_SHOT") {
             Ok(v) => {
                 let (d, ts) = v.split_once(':').expect("DUPERHEX_SHOT=DIR:T1,T2,...");

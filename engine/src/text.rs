@@ -11,9 +11,11 @@ use sdl3::video::WindowContext;
 use crate::pack::Rgb;
 use crate::render::fcolor;
 
-/// The original's font sizes (those it uses) at its 768x480 layout.
+/// The original's font sizes (those it uses) at its 768x480 layout, plus Small for our own
+/// overlays.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Size {
+    Small,
     Normal,
     Big,
     Heading,
@@ -24,6 +26,7 @@ impl Size {
     /// In pixels per em at the 480-high GUI scale: the original's points, set at 96 dpi.
     fn em(self) -> f32 {
         let pt = match self {
+            Size::Small => 7.0,
             Size::Normal => 12.0,
             Size::Big => 25.0,
             Size::Heading => 38.0,

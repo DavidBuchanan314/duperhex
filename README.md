@@ -9,7 +9,12 @@ Features:
 - No FPS locking, with continuous-time physics and animation.
 - Support for ultrawide aspect ratios without black bars.
 - F11 to toggle fullscreen mode.
+- Optional FPS counter.
 
 TODO:
 
 - Input methods other than keyboard.
+
+Non-Features:
+
+- Steam integration, scoreboards, arcade mode.

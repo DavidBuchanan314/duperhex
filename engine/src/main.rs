@@ -28,6 +28,8 @@ const MAX_FRAME_TICKS: f64 = 10.0;
 /// linear filtering until it fits, each halving averaging 2x2 pixels.
 const SS_HALVINGS: u32 = 2;
 const MAX_SS_SIZE: u32 = 8192;
+/// How often the FPS counter updates.
+const FPS_INTERVAL_NS: u64 = 500_000_000;
 
 /// Supersampling render targets, largest first, and the window size they were made for.
 struct Supersample<'a> {
@@ -42,37 +44,77 @@ fn main() {
     }
 }
 
-const USAGE: &str = "usage: duperhex PACK.zip [LEVEL_ID] [--speed X]";
+#[cfg(debug_assertions)]
+const USAGE: &str = "usage: duperhex PACK.zip [LEVEL_ID] [--speed X] [--fps]";
+#[cfg(not(debug_assertions))]
+const USAGE: &str = "usage: duperhex PACK.zip [--speed X] [--fps]";
 
-/// The command line: the pack, a level to start in, and how fast the game runs.
+fn help() -> String {
+    let mut s = format!(
+        "{USAGE}
+
+Arguments:
+  PACK.zip      asset pack produced by the extractor
+
+Options:
+  --speed X     game speed multiplier, from {} to {} (default 1)
+  --fps         show a frame rate counter
+  -h, --help    print this help and exit",
+        audio::MIN_SPEED,
+        audio::MAX_SPEED
+    );
+    if cfg!(debug_assertions) {
+        s += "
+
+Debug arguments (debug builds only):
+  LEVEL_ID      level to start in directly, skipping the menus
+
+Debug environment variables (debug builds only):
+  DUPERHEX_SHOT=DIR:T1,T2,...    save a screenshot to DIR at each tick time, then exit
+  DUPERHEX_INPUT=T:KEYS,...      hold KEYS from each tick time: L R U D S(elect) E(sc) C(lear), or - for none
+  DUPERHEX_TRACE                 print the player's state and the pulse every frame
+  DUPERHEX_GOD                   make the player immune to walls";
+    }
+    s
+}
+
+/// The command line: the pack, a level to start in (debug builds only), how fast the game runs,
+/// and whether to show the frame rate.
 struct Args {
     pack: String,
     level: Option<String>,
     speed: f64,
+    show_fps: bool,
 }
 
 fn args() -> Result<Args, String> {
     let mut positional = Vec::new();
     let mut speed = 1.0;
+    let mut show_fps = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
-        if a == "--speed" {
+        if a == "-h" || a == "--help" {
+            println!("{}", help());
+            std::process::exit(0);
+        } else if a == "--speed" {
             let v = it.next().ok_or(USAGE)?;
             speed = v.parse().map_err(|_| format!("--speed: not a number: {v}"))?;
             if !(audio::MIN_SPEED..=audio::MAX_SPEED).contains(&speed) {
                 return Err(format!("--speed: must be from {} to {}", audio::MIN_SPEED, audio::MAX_SPEED));
             }
+        } else if a == "--fps" {
+            show_fps = true;
         } else {
             positional.push(a);
         }
     }
     let mut positional = positional.into_iter();
     let pack = positional.next().ok_or(USAGE)?;
-    let level = positional.next();
+    let level = if cfg!(debug_assertions) { positional.next() } else { None };
     if positional.next().is_some() {
         return Err(USAGE.into());
     }
-    Ok(Args { pack, level, speed })
+    Ok(Args { pack, level, speed, show_fps })
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -113,6 +155,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut base = platform::ticks_ns();
     let speed = args.speed;
     let to_sim = |ns: u64, base: u64| ns.saturating_sub(base) as f64 * TICK_RATE * speed / 1e9;
+    // frame rate: frames counted since fps_start, shown as of the last update
+    let (mut fps, mut fps_frames, mut fps_start) = (0.0, 0u32, base);
 
     'run: loop {
         if g.take_display_changed() {
@@ -178,6 +222,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         // the interface, at sh / GUI_H pixels per unit
         let k = sh as f64 / ui::GUI_H;
         gui.build(&g, sw as f64 / k, render::palette(g.world()));
+        if args.show_fps {
+            fps_frames += 1;
+            let dt = now.saturating_sub(fps_start);
+            if dt >= FPS_INTERVAL_NS {
+                fps = fps_frames as f64 * 1e9 / dt as f64;
+                (fps_frames, fps_start) = (0, now);
+            }
+            gui.fps(fps);
+        }
         gui_verts.clear();
         gui_verts.extend(gui.tris.iter().flat_map(|t| {
             let color = render::fcolor(t.color);

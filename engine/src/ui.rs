@@ -240,6 +240,7 @@ impl<'f> Gui<'f> {
         };
         // the original's baselines: small text by an X's height, big text by its own
         let (pad, height) = match size {
+            Size::Small => (2.0, self.font.height("X", size)),
             Size::Normal => (4.0, self.font.height("X", size)),
             Size::Big => (5.0, self.font.height(t, size)),
             Size::Heading | Size::Title => (4.0, self.font.height(t, size)),
@@ -250,6 +251,16 @@ impl<'f> Gui<'f> {
 
     fn print(&mut self, at: At, y: f64, s: impl fmt::Display, rgb: Rgb) {
         self.text(at, y, s, rgb, Size::Normal);
+    }
+
+    /// An FPS counter in the bottom left corner, on a black panel.
+    pub fn fps(&mut self, fps: f64) {
+        let s = format!("{fps:.0} FPS");
+        let r = self.width(&s, Size::Small) + 6.0;
+        // Small text's baseline is 2 below y plus an X's height; leave 2 more under it
+        let top = GUI_H - 6.0 - self.font.height("X", Size::Small);
+        self.poly([(0.0, top), (0.0, GUI_H), (r + (GUI_H - top) * slant(), GUI_H), (r, top)]);
+        self.text(Left(3.0), top + 2.0, s, WHITE, Size::Small);
     }
 
     /// Lays out the interface for this frame, `w` GUI units wide.
