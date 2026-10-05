@@ -8,6 +8,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_VOLUME: u32 = 10;
+/// The extras menu's game speeds, slowest first.
+pub const SPEEDS: [(&str, f64); 5] = [("SLOTH", 0.5), ("DAYCORE", 0.75), ("NORMAL", 1.0), ("NIGHTCORE", 1.35), ("CHIPMUNK", 1.75)];
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -26,6 +28,8 @@ pub struct Settings {
     /// Multisampling's samples per pixel: 1 for no antialiasing.
     pub antialiasing: u32,
     pub show_fps: bool,
+    /// Game speed multiplier.
+    pub speed: f64,
     /// The installed pack to run when none is named.
     pub last_pack: Option<String>,
 }
@@ -42,6 +46,7 @@ impl Default for Settings {
             bloom: false,
             antialiasing: 4,
             show_fps: false,
+            speed: 1.0,
             last_pack: None,
         }
     }

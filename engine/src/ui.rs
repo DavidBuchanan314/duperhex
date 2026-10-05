@@ -6,7 +6,7 @@ use std::fmt::{self, Write};
 
 use crate::game::{EXTRAS, GAME_OVER_ZOOM, Game, Held, Menu, OPTIONS, Unlock};
 use crate::pack::{Announce, Colour, MenuColour, Rgb};
-use crate::save::MAX_VOLUME;
+use crate::save::{MAX_VOLUME, SPEEDS};
 use crate::text::{Font, Size, TextItem};
 use crate::world::{self, Colours, Scene, slot};
 
@@ -496,6 +496,11 @@ impl<'f> Gui<'f> {
                 n => format!("ANTIALIASING: {n}X MSAA"),
             },
             format!("SHOW FPS: {}", on(s.show_fps)),
+            match SPEEDS.iter().find(|&&(_, x)| x == g.speed()) {
+                _ if g.speed_overridden() => format!("SPEED: {}X (COMMAND LINE)", g.speed()),
+                Some((name, x)) => format!("SPEED: {name} ({x}X)"),
+                None => format!("SPEED: {}X", g.speed()),
+            },
         ];
         self.corner_button(PROMPT_BACK, 0.0);
         let temp = lines.iter().map(|l| self.width(l, Size::Normal)).fold(0.0, f64::max) / 2.0 + 20.0;

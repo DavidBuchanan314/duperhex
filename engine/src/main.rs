@@ -30,6 +30,19 @@ const MAX_FRAME_TICKS: f64 = 10.0;
 /// How often the FPS counter updates.
 const FPS_INTERVAL_NS: u64 = 500_000_000;
 
+/// Maps SDL's clock to simulation time.
+struct Clock {
+    base: u64,
+    sim0: f64,
+    speed: f64,
+}
+
+impl Clock {
+    fn at(&self, ns: u64) -> f64 {
+        self.sim0 + ns.saturating_sub(self.base) as f64 * TICK_RATE * self.speed / 1e9
+    }
+}
+
 /// The original's picture is 16:10; with black bars it keeps that shape.
 const ORIGINAL_ASPECT: f64 = 1.6;
 
@@ -72,10 +85,8 @@ Options:
                 check a pack and install it for later runs, replacing any installed pack
                 with the same id, then exit
   --pack ID     run the installed pack with this id
-  --speed X     game speed multiplier, from {} to {} (default 1)
-  -h, --help    print this help and exit",
-        audio::MIN_SPEED,
-        audio::MAX_SPEED
+  --speed X     game speed multiplier override
+  -h, --help    print this help and exit"
     );
     if cfg!(debug_assertions) {
         s += "
@@ -100,12 +111,12 @@ enum PackChoice {
 }
 
 /// The command line: a pack to install, or else the pack to run, a level to start in (debug
-/// builds only), and how fast the game runs.
+/// builds only), and a game speed overriding the saved one.
 struct Args {
     install: Option<PathBuf>,
     pack: PackChoice,
     level: Option<String>,
-    speed: f64,
+    speed: Option<f64>,
 }
 
 fn args() -> Result<Args, String> {
@@ -113,7 +124,7 @@ fn args() -> Result<Args, String> {
     let mut id = None;
     let mut install = None;
     let mut level = None;
-    let mut speed = 1.0;
+    let mut speed = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         if a == "-h" || a == "--help" {
@@ -127,10 +138,7 @@ fn args() -> Result<Args, String> {
             level = Some(it.next().ok_or(USAGE)?);
         } else if a == "--speed" {
             let v = it.next().ok_or(USAGE)?;
-            speed = v.parse().map_err(|_| format!("--speed: not a number: {v}"))?;
-            if !(audio::MIN_SPEED..=audio::MAX_SPEED).contains(&speed) {
-                return Err(format!("--speed: must be from {} to {}", audio::MIN_SPEED, audio::MAX_SPEED));
-            }
+            speed = Some(v.parse().map_err(|_| format!("--speed: not a number: {v}"))?);
         } else if a.starts_with('-') || path.is_some() {
             return Err(USAGE.into());
         } else {
@@ -170,7 +178,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
     let mut window = video.window("duperhex", 768, 480).resizable().high_pixel_density().build()?;
-    let audio = audio::Audio::new(&sdl, pack, files, args.speed)?;
+    let audio = audio::Audio::new(&sdl, pack, files)?;
     let mut events = sdl.event_pump()?;
     let mouse = sdl.mouse();
     let mut atlas = text::Atlas::new();
@@ -181,7 +189,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     if dbg.wants_shots() && !gpu.can_capture() {
         return Err("screenshots: the window's surface can't be read back".into());
     }
-    let mut g = game::Game::new(pack, audio, save, gpu.sample_counts().to_vec(), rand::random());
+    let mut g = game::Game::new(pack, audio, save, gpu.sample_counts().to_vec(), args.speed, rand::random());
     g.set_god(dbg.god);
     if let Some(li) = start {
         g.start_run(li);
@@ -193,12 +201,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut gui_verts: Vec<Vertex> = Vec::new();
     let mut text_verts: Vec<Vertex> = Vec::new();
 
-    // simulation time = (real ns - base) in ticks
-    let mut base = platform::ticks_ns();
-    let speed = args.speed;
-    let to_sim = |ns: u64, base: u64| ns.saturating_sub(base) as f64 * TICK_RATE * speed / 1e9;
+    let mut clock = Clock { base: platform::ticks_ns(), sim0: g.world().t(), speed: g.speed() };
     // frame rate: frames counted since fps_start, shown as of the last update
-    let (mut fps, mut fps_frames, mut fps_start) = (0.0, 0u32, base);
+    let (mut fps, mut fps_frames, mut fps_start) = (0.0, 0u32, clock.base);
 
     'run: loop {
         if g.take_display_changed() {
@@ -208,10 +213,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             gpu.set_vsync(s.vsync);
         }
         let now = platform::ticks_ns();
-        if to_sim(now, base) - g.world().t() > MAX_FRAME_TICKS * speed {
-            base = now - ((g.world().t() + MAX_FRAME_TICKS * speed) * 1e9 / (TICK_RATE * speed)) as u64;
+        if g.speed() != clock.speed {
+            clock = Clock { base: now, sim0: g.world().t(), speed: g.speed() };
         }
-        let target = to_sim(now, base);
+        if clock.at(now) - g.world().t() > MAX_FRAME_TICKS * clock.speed {
+            clock = Clock { base: now, sim0: g.world().t() + MAX_FRAME_TICKS * clock.speed, ..clock };
+        }
+        let target = clock.at(now);
 
         for ev in events.poll_iter() {
             let (down, ts, sc) = match ev {
@@ -221,7 +229,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 _ => continue,
             };
             // apply input changes at the moment they happened
-            g.advance_to(to_sim(ts, base).clamp(g.world().t(), target));
+            g.advance_to(clock.at(ts).clamp(g.world().t(), target));
             let key = match sc {
                 Scancode::Left | Scancode::A => Key::Left,
                 Scancode::Right | Scancode::D => Key::Right,

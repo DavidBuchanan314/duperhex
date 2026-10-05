@@ -14,7 +14,7 @@ Features:
 	- Antialiasing options.
 	- Chromatic aberration shader.
 	- Bloom shader.
-- Optional `--speed` multiplier to speed up or slow down the game.
+	- Adjust gameplay speed (highscores/progression will not persist when set below 1X).
 
 The custom shaders are a little tacky, they're off by default and mainly exist as a demonstration of what's possible.
 

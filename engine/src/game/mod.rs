@@ -8,11 +8,11 @@ use std::ops::Range;
 use crate::audio::Audio;
 use crate::ids::{LevelId, SoundId};
 use crate::pack::{Announce, Pack};
-use crate::save::{MAX_VOLUME, Save};
+use crate::save::{MAX_VOLUME, SPEEDS, Save};
 use crate::world::{self, Event, RunSetup, Scene, Turn, World};
 
 pub const OPTIONS: usize = 5;
-pub const EXTRAS: usize = 5;
+pub const EXTRAS: usize = 6;
 const MAIN_MENU_ITEMS: usize = 4;
 /// Ticks before the title's voice.
 const TITLE_VOICE: u32 = 45;
@@ -102,6 +102,10 @@ pub struct Game {
     display_changed: bool,
     /// The antialiasing sample counts the GPU supports, ascending from 1.
     sample_counts: Vec<u32>,
+    /// A game speed from the command line, in place of the saved one.
+    speed_override: Option<f64>,
+    /// The tutorial was finished this session, at a speed that doesn't save it.
+    tutorial_seen: bool,
 
     pub menu: Menu,
     pub cursor: usize,
@@ -123,9 +127,8 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(pack: &'static Pack, mut audio: Audio, save: Save, sample_counts: Vec<u32>, seed: u64) -> Game {
-        audio.set_volumes(save.settings.music_volume, save.settings.sound_volume);
-        Game {
+    pub fn new(pack: &'static Pack, audio: Audio, save: Save, sample_counts: Vec<u32>, speed_override: Option<f64>, seed: u64) -> Game {
+        let mut g = Game {
             pack,
             world: World::new(pack, seed),
             audio,
@@ -133,6 +136,8 @@ impl Game {
             quit: false,
             display_changed: true,
             sample_counts,
+            speed_override,
+            tutorial_seen: false,
             menu: Menu::Main,
             cursor: 0,
             page: 0,
@@ -147,7 +152,10 @@ impl Game {
             announce: None,
             gave_up: false,
             events: Vec::with_capacity(64),
-        }
+        };
+        g.audio.set_volumes(g.save.settings.music_volume, g.save.settings.sound_volume);
+        g.audio.set_speed(g.speed());
+        g
     }
 
     fn sounds(&self, ids: &[SoundId]) {
@@ -169,6 +177,21 @@ impl Game {
 
     pub fn save(&self) -> &Save {
         &self.save
+    }
+
+    /// How fast the game runs.
+    pub fn speed(&self) -> f64 {
+        self.speed_override.unwrap_or(self.save.settings.speed)
+    }
+
+    /// Whether the speed is set from the command line.
+    pub fn speed_overridden(&self) -> bool {
+        self.speed_override.is_some()
+    }
+
+    /// Runs below 1X don't count towards records or unlocks.
+    fn keeps_progress(&self) -> bool {
+        self.speed() >= 1.0
     }
 
     /// Debugging: no collisions.
@@ -313,8 +336,10 @@ impl Game {
                         Unlock::Ending => {}
                     }
                     self.gave_up = false;
-                    self.record_best();
-                    self.save.write();
+                    if self.keeps_progress() {
+                        self.record_best();
+                        self.save.write();
+                    }
                 }
                 Event::EndingDone => {
                     self.unlock = Unlock::GameComplete;
@@ -322,8 +347,11 @@ impl Game {
                     self.sounds(&self.pack.roles.unlock);
                 }
                 Event::TutorialDone => {
-                    self.save.progress.tutorial_done = true;
-                    self.save.write();
+                    self.tutorial_seen = true;
+                    if self.keeps_progress() {
+                        self.save.progress.tutorial_done = true;
+                        self.save.write();
+                    }
                 }
             }
         }
@@ -370,7 +398,10 @@ impl Game {
     pub fn start_run(&mut self, li: LevelId) {
         let pack = self.pack;
         let best = self.best(li);
-        self.world.start_run(RunSetup { level: li, best, first_completion: !self.completed(li), tutorial: !self.save.progress.tutorial_done });
+        // below 1X, a level can't be completed (as if it already had been)
+        let first_completion = !self.completed(li) && self.keeps_progress();
+        let tutorial = !self.save.progress.tutorial_done && !self.tutorial_seen;
+        self.world.start_run(RunSetup { level: li, best, first_completion, tutorial });
         self.unlock = Unlock::None;
         self.unlocktimer = 0;
         self.announce = None;
@@ -510,7 +541,14 @@ impl Game {
                             let counts = &self.sample_counts;
                             s.antialiasing = counts.iter().copied().find(|&n| n > s.antialiasing).unwrap_or(counts[0]);
                         }
-                        _ => s.show_fps = !s.show_fps,
+                        4 => s.show_fps = !s.show_fps,
+                        _ => {
+                            // the next speed up, wrapping round to the slowest
+                            if self.speed_override.is_none() {
+                                s.speed = SPEEDS.iter().map(|&(_, x)| x).find(|&x| x > s.speed).unwrap_or(SPEEDS[0].1);
+                                self.audio.set_speed(s.speed);
+                            }
+                        }
                     }
                     self.save.write();
                 }

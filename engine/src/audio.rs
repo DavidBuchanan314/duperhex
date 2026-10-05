@@ -14,9 +14,6 @@ use crate::save::MAX_VOLUME;
 
 /// How far ahead the music is fed, in seconds of real time.
 const MUSIC_LEAD: f64 = 1.0;
-/// How fast the game can run, as SDL can speed sound up or slow it down.
-pub const MIN_SPEED: f64 = 0.01;
-pub const MAX_SPEED: f64 = 100.0;
 /// Music fades in over this many ticks, and out over FADE_OUT.
 const FADE_IN: u32 = 30;
 const FADE_OUT: u32 = 45;
@@ -87,7 +84,7 @@ pub struct Audio {
 }
 
 impl Audio {
-    pub fn new(sdl: &sdl3::Sdl, pack: &'static Pack, mut files: Files, speed: f64) -> Result<Audio, sdl3::Error> {
+    pub fn new(sdl: &sdl3::Sdl, pack: &'static Pack, mut files: Files) -> Result<Audio, sdl3::Error> {
         let tracks: Arc<IdVec<_, _>> = Arc::new(pack.tracks.iter().map(|_| OnceLock::new()).collect());
         for (id, t) in pack.tracks.iter_enumerated() {
             let (tracks, file, bytes) = (tracks.clone(), t.file.as_str(), files.take(&t.file));
@@ -103,13 +100,22 @@ impl Audio {
             .map(|s| {
                 let pcm = decode(&s.file, &files.take(&s.file));
                 let stream = subsystem.new_stream(Some(&pcm.spec()), None)?;
-                crate::platform::set_frequency_ratio(&stream, speed as f32)?;
                 device.bind_stream(&stream)?;
                 Ok((pcm, stream))
             })
             .collect::<Result<_, sdl3::Error>>()?;
         let track_streams = pack.tracks.iter().map(|_| None).collect();
-        Ok(Audio { pack, subsystem, sounds, tracks, track_streams, music: None, music_gain: 1.0, speed, device })
+        Ok(Audio { pack, subsystem, sounds, tracks, track_streams, music: None, music_gain: 1.0, speed: 1.0, device })
+    }
+
+    /// Plays everything `speed` times as fast.
+    pub fn set_speed(&mut self, speed: f64) {
+        self.speed = speed;
+        for s in self.sounds.iter().map(|(_, s)| s).chain(self.track_streams.iter().flatten()) {
+            if let Err(e) = crate::platform::set_frequency_ratio(s, speed as f32) {
+                eprintln!("audio speed: {e}");
+            }
+        }
     }
 
     /// Volumes from 0 to MAX_VOLUME.
