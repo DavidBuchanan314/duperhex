@@ -15,6 +15,7 @@ Features:
 	- Chromatic aberration shader.
 	- Bloom shader.
 	- Adjust gameplay speed (highscores/progression will not persist when set below 1X).
+- Fixes a palette-fade bug present in the original game (Can be seen in [this playthrough](https://www.youtube.com/watch?v=no88YA8vs2Q&t=438s) at 7:18).
 
 The custom shaders are a little tacky, they're off by default and mainly exist as a demonstration of what's possible.
 

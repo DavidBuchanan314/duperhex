@@ -21,7 +21,7 @@ pub mod slot {
     pub const NEAR_WALLS: usize = 6;
     /// GUI highlights and borders, and the player's shadow.
     pub const HIGHLIGHT: usize = 7;
-    /// A five-sided shape's odd background wedge.
+    /// A pentagon's odd background wedge.
     pub const ODD_WEDGE: usize = 8;
 }
 pub type Colours = [Rgb; SLOTS];
@@ -161,10 +161,11 @@ impl Pal {
                     self.osc = Osc::Resting(REST);
                 }
                 if let Fade::Out(target) = self.xfade {
-                    // fade in from the colours on screen (all but the last slot, as the original)
+                    // fade in from the colours on screen (fixes a bug in the original Super Hexagon,
+                    // which leaves out the last slot, so a pentagon's odd wedge jumps to the new palette)
                     let cur = self.colours();
                     self.set(pack, target);
-                    self.start[..SLOTS - 1].copy_from_slice(&cur[..SLOTS - 1]);
+                    self.start = cur;
                     self.xfade = Fade::In(target);
                 }
             }
