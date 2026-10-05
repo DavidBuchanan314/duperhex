@@ -2,7 +2,7 @@
 //!
 //! - `DUPERHEX_SHOT=DIR:T1,T2,...` saves a screenshot at each tick time, then exits.
 //! - `DUPERHEX_INPUT=T:KEYS,...` holds the keys from each tick time: L(eft) R(ight) U(p) D(own)
-//!   S(elect) E(sc) C(lear), or - for none.
+//!   S(elect) E(sc) C(lear), the mouse buttons 1 (left) 2 (middle) 3 (right), or - for none.
 //! - `DUPERHEX_TRACE` prints the player's state and the pulse every frame.
 //! - `DUPERHEX_GOD` makes the player immune to walls.
 //!
@@ -10,7 +10,7 @@
 
 use std::env;
 
-use crate::game::{Game, Held, Key};
+use crate::game::{Button, Buttons, Game, Held, Key};
 use crate::gpu::Image;
 
 pub struct Debug {
@@ -19,15 +19,16 @@ pub struct Debug {
     /// Pending screenshot times, last first.
     shots: Vec<f64>,
     shot_dir: String,
-    /// Pending input changes, last first, and the controls held now.
-    input: Vec<(f64, Held)>,
+    /// Pending input changes, last first, and the controls and mouse buttons held now.
+    input: Vec<(f64, Held, Buttons)>,
     held: Held,
+    buttons: Buttons,
 }
 
 impl Debug {
     pub fn from_env() -> Debug {
         if !cfg!(debug_assertions) {
-            return Debug { trace: false, god: false, shots: vec![], shot_dir: String::new(), input: vec![], held: Held::default() };
+            return Debug { trace: false, god: false, shots: vec![], shot_dir: String::new(), input: vec![], held: Held::default(), buttons: Buttons::default() };
         }
         let (shot_dir, mut shots) = match env::var("DUPERHEX_SHOT") {
             Ok(v) => {
@@ -37,7 +38,7 @@ impl Debug {
             Err(_) => (String::new(), vec![]),
         };
         shots.reverse();
-        let mut input: Vec<(f64, Held)> = env::var("DUPERHEX_INPUT")
+        let mut input: Vec<(f64, Held, Buttons)> = env::var("DUPERHEX_INPUT")
             .map(|v| {
                 v.split(',')
                     .map(|e| {
@@ -51,18 +52,19 @@ impl Debug {
                             quit: k.contains('E'),
                             clear: k.contains('C'),
                         };
-                        (t.parse().expect("DUPERHEX_INPUT time"), h)
+                        let b = Buttons { left: k.contains('1'), middle: k.contains('2'), right: k.contains('3') };
+                        (t.parse().expect("DUPERHEX_INPUT time"), h, b)
                     })
                     .collect()
             })
             .unwrap_or_default();
         input.reverse();
-        Debug { trace: env::var_os("DUPERHEX_TRACE").is_some(), god: env::var_os("DUPERHEX_GOD").is_some(), shots, shot_dir, input, held: Held::default() }
+        Debug { trace: env::var_os("DUPERHEX_TRACE").is_some(), god: env::var_os("DUPERHEX_GOD").is_some(), shots, shot_dir, input, held: Held::default(), buttons: Buttons::default() }
     }
 
     /// Applies scripted input up to time `target`.
     pub fn feed(&mut self, g: &mut Game, target: f64) {
-        while let Some(&(t, k)) = self.input.last().filter(|&&(t, _)| t <= target) {
+        while let Some(&(t, k, b)) = self.input.last().filter(|&&(t, _, _)| t <= target) {
             self.input.pop();
             g.advance_to(t);
             // pressed together, left counts as the later
@@ -79,6 +81,13 @@ impl Debug {
             for (key, before, now) in changes {
                 if before != now {
                     g.key(key, now);
+                }
+            }
+            let was = std::mem::replace(&mut self.buttons, b);
+            let changes = [(Button::Right, was.right, b.right), (Button::Middle, was.middle, b.middle), (Button::Left, was.left, b.left)];
+            for (button, before, now) in changes {
+                if before != now {
+                    g.button(button, now);
                 }
             }
         }

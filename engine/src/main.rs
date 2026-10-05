@@ -20,8 +20,9 @@ use std::path::PathBuf;
 
 use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
+use sdl3::mouse::MouseButton;
 
-use game::Key;
+use game::{Button, Key};
 use gpu::{Gpu, Vertex};
 use world::TICK_RATE;
 
@@ -41,6 +42,12 @@ impl Clock {
     fn at(&self, ns: u64) -> f64 {
         self.sim0 + ns.saturating_sub(self.base) as f64 * TICK_RATE * self.speed / 1e9
     }
+}
+
+/// What a key or mouse button event pressed or released.
+enum Input {
+    Key(Scancode),
+    Mouse(MouseButton),
 }
 
 /// The original's picture is 16:10; with black bars it keeps that shape.
@@ -96,7 +103,7 @@ Debug options (debug builds only):
 
 Debug environment variables (debug builds only):
   DUPERHEX_SHOT=DIR:T1,T2,...    save a screenshot to DIR at each tick time, then exit
-  DUPERHEX_INPUT=T:KEYS,...      hold KEYS from each tick time: L R U D S(elect) E(sc) C(lear), or - for none
+  DUPERHEX_INPUT=T:KEYS,...      hold KEYS from each tick time: L R U D S(elect) E(sc) C(lear), mouse 1 2 3, or - for none
   DUPERHEX_TRACE                 print the player's state and the pulse every frame
   DUPERHEX_GOD                   make the player immune to walls";
     }
@@ -222,29 +229,44 @@ fn run() -> Result<(), Box<dyn Error>> {
         let target = clock.at(now);
 
         for ev in events.poll_iter() {
-            let (down, ts, sc) = match ev {
+            let (down, ts, input) = match ev {
                 Event::Quit { .. } => break 'run,
-                Event::KeyDown { timestamp, scancode: Some(sc), repeat: false, .. } => (true, timestamp, sc),
-                Event::KeyUp { timestamp, scancode: Some(sc), .. } => (false, timestamp, sc),
+                Event::KeyDown { timestamp, scancode: Some(sc), repeat: false, .. } => (true, timestamp, Input::Key(sc)),
+                Event::KeyUp { timestamp, scancode: Some(sc), .. } => (false, timestamp, Input::Key(sc)),
+                Event::MouseButtonDown { timestamp, mouse_btn, .. } => (true, timestamp, Input::Mouse(mouse_btn)),
+                Event::MouseButtonUp { timestamp, mouse_btn, .. } => (false, timestamp, Input::Mouse(mouse_btn)),
                 _ => continue,
             };
             // apply input changes at the moment they happened
             g.advance_to(clock.at(ts).clamp(g.world().t(), target));
-            let key = match sc {
-                Scancode::Left | Scancode::A => Key::Left,
-                Scancode::Right | Scancode::D => Key::Right,
-                Scancode::Up | Scancode::W => Key::Up,
-                Scancode::Down | Scancode::S => Key::Down,
-                Scancode::Space | Scancode::Return | Scancode::Z => Key::Select,
-                Scancode::Escape => Key::Quit,
-                Scancode::C => Key::Clear,
-                Scancode::F11 if down => {
-                    g.toggle_fullscreen();
-                    continue;
+            match input {
+                Input::Key(sc) => {
+                    let key = match sc {
+                        Scancode::Left | Scancode::A => Key::Left,
+                        Scancode::Right | Scancode::D => Key::Right,
+                        Scancode::Up | Scancode::W => Key::Up,
+                        Scancode::Down | Scancode::S => Key::Down,
+                        Scancode::Space | Scancode::Return | Scancode::Z => Key::Select,
+                        Scancode::Escape => Key::Quit,
+                        Scancode::C => Key::Clear,
+                        Scancode::F11 if down => {
+                            g.toggle_fullscreen();
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    g.key(key, down);
                 }
-                _ => continue,
-            };
-            g.key(key, down);
+                Input::Mouse(b) => {
+                    let button = match b {
+                        MouseButton::Left => Button::Left,
+                        MouseButton::Middle => Button::Middle,
+                        MouseButton::Right => Button::Right,
+                        _ => continue,
+                    };
+                    g.button(button, down);
+                }
+            }
         }
         dbg.feed(&mut g, target);
         g.advance_to(target);

@@ -21,7 +21,7 @@ The custom shaders are a little tacky, they're off by default and mainly exist a
 
 TODO:
 
-- Input methods other than keyboard.
+- Input methods other than keyboard / mouse.
 
 Non-Features:
 

@@ -3,7 +3,7 @@
 //! The game drives the world tick by tick: menus react at ticks, before the world's own logic,
 //! and what the world reports (`Event`s) is turned into sound, saves and HUD flashes.
 
-use std::ops::Range;
+use std::ops::{BitOr, Range};
 
 use crate::audio::Audio;
 use crate::ids::{LevelId, SoundId};
@@ -66,6 +66,22 @@ pub enum Key {
     Clear,
 }
 
+/// A mouse button.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Button {
+    Left,
+    Middle,
+    Right,
+}
+
+/// The mouse buttons, as held.
+#[derive(Clone, Copy, Default)]
+pub struct Buttons {
+    pub left: bool,
+    pub middle: bool,
+    pub right: bool,
+}
+
 /// The controls, as held.
 #[derive(Clone, Copy, Default, PartialEq)]
 pub struct Held {
@@ -76,6 +92,22 @@ pub struct Held {
     pub select: bool,
     pub quit: bool,
     pub clear: bool,
+}
+
+impl BitOr for Held {
+    type Output = Held;
+
+    fn bitor(self, o: Held) -> Held {
+        Held {
+            left: self.left || o.left,
+            right: self.right || o.right,
+            up: self.up || o.up,
+            down: self.down || o.down,
+            select: self.select || o.select,
+            quit: self.quit || o.quit,
+            clear: self.clear || o.clear,
+        }
+    }
 }
 
 /// The HUD's view of the run.
@@ -113,7 +145,10 @@ pub struct Game {
     menu_cooldown: u32,
     /// After an action, menu input is ignored until everything is released.
     inputlock: bool,
+    /// The controls held, from the keyboard and the mouse together.
     keys: Held,
+    keyboard: Held,
+    buttons: Buttons,
     /// Which way to turn: the most recently pressed of left and right, while held.
     turning: Option<Turn>,
     title_voice: u32,
@@ -144,6 +179,8 @@ impl Game {
             menu_cooldown: 0,
             inputlock: false,
             keys: Held::default(),
+            keyboard: Held::default(),
+            buttons: Buttons::default(),
             turning: None,
             title_voice: TITLE_VOICE,
             hud: Hud { levelreached: 0, rankbar: 0.0..1.0, levelupflash: 0.0, newbestflash: 0.0, rankupflash: 0.0, menuslide: 0.0 },
@@ -238,9 +275,9 @@ impl Game {
     // ---------------------------------------------------------------------------------------
     // time
 
-    /// A control pressed or released. Of left and right, the most recently pressed one wins.
+    /// A control pressed or released.
     pub fn key(&mut self, key: Key, down: bool) {
-        let k = &mut self.keys;
+        let k = &mut self.keyboard;
         match key {
             Key::Left => k.left = down,
             Key::Right => k.right = down,
@@ -250,13 +287,52 @@ impl Game {
             Key::Quit => k.quit = down,
             Key::Clear => k.clear = down,
         }
-        let held = |t| if t == Turn::Left { k.left } else { k.right };
-        let any_held = if k.left { Some(Turn::Left) } else if k.right { Some(Turn::Right) } else { None };
-        self.turning = match (key, down) {
+        self.update_keys(match (key, down) {
             (Key::Left, true) => Some(Turn::Left),
             (Key::Right, true) => Some(Turn::Right),
-            _ => self.turning.filter(|&t| held(t)).or(any_held),
-        };
+            _ => None,
+        });
+    }
+
+    /// A mouse button pressed or released.
+    pub fn button(&mut self, button: Button, down: bool) {
+        let before = self.mouse_keys();
+        let b = &mut self.buttons;
+        match button {
+            Button::Left => b.left = down,
+            Button::Middle => b.middle = down,
+            Button::Right => b.right = down,
+        }
+        let after = self.mouse_keys();
+        self.update_keys(if after.left && !before.left {
+            Some(Turn::Left)
+        } else if after.right && !before.right {
+            Some(Turn::Right)
+        } else {
+            None
+        });
+    }
+
+    /// The controls the mouse buttons hold, as the original: in a run the left and right buttons
+    /// turn (and select), elsewhere the left one selects and the right one moves right; the
+    /// middle one quits.
+    fn mouse_keys(&self) -> Held {
+        let b = self.buttons;
+        if self.world.scene() == Scene::Run {
+            Held { left: b.left, right: b.right, select: b.left || b.right, quit: b.middle, ..Held::default() }
+        } else {
+            Held { right: b.right, select: b.left, quit: b.middle, ..Held::default() }
+        }
+    }
+
+    /// Merges the keyboard and the mouse. Of left and right, the most recently pressed one wins:
+    /// `pressed`, if one just was.
+    fn update_keys(&mut self, pressed: Option<Turn>) {
+        let k = self.keyboard | self.mouse_keys();
+        self.keys = k;
+        let held = |t| if t == Turn::Left { k.left } else { k.right };
+        let any_held = if k.left { Some(Turn::Left) } else if k.right { Some(Turn::Right) } else { None };
+        self.turning = pressed.or(self.turning.filter(|&t| held(t))).or(any_held);
         self.world.set_input(self.turning, k.left, k.right);
     }
 
@@ -281,6 +357,8 @@ impl Game {
     }
 
     fn tick(&mut self) {
+        // what the mouse buttons do depends on the scene, which may have changed
+        self.update_keys(None);
         let keys = self.menu_keys();
         match self.world.scene() {
             Scene::Title => self.title_input(keys),
