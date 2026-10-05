@@ -14,6 +14,7 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
 use crate::colour::Linear;
+use crate::save::{VSYNCS, Vsync};
 use crate::text::{ATLAS, GlyphUpload};
 
 /// A vertex in pixels of the frame. Shapes ignore `uv`.
@@ -97,6 +98,8 @@ pub struct Gpu {
     config: wgpu::SurfaceConfiguration,
     /// The antialiasing sample counts the frame supports, ascending from 1.
     sample_counts: Vec<u32>,
+    /// The vsync modes the surface supports, in the menu's order.
+    vsyncs: Vec<Vsync>,
 
     // what pipelines for other sample counts are made from
     draw_module: wgpu::ShaderModule,
@@ -236,14 +239,18 @@ fn attachment<'a>(msaa: Option<&'a wgpu::TextureView>, level: &'a Level) -> (&'a
     }
 }
 
-fn present_mode(vsync: bool) -> wgpu::PresentMode {
-    if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync }
+fn present_mode(vsync: Vsync) -> wgpu::PresentMode {
+    match vsync {
+        Vsync::Off => wgpu::PresentMode::Immediate,
+        Vsync::On => wgpu::PresentMode::Fifo,
+        Vsync::Mailbox => wgpu::PresentMode::Mailbox,
+    }
 }
 
 impl Gpu {
     /// # Safety
     /// The window must outlive the `Gpu`.
-    pub unsafe fn new(window: &Window, vsync: bool) -> Result<Gpu, Box<dyn Error>> {
+    pub unsafe fn new(window: &Window, vsync: Vsync) -> Result<Gpu, Box<dyn Error>> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let target = wgpu::SurfaceTargetUnsafe::RawHandle {
             raw_display_handle: Some(window.display_handle()?.as_raw()),
@@ -265,6 +272,7 @@ impl Gpu {
         };
 
         let caps = surface.get_capabilities(&adapter);
+        let vsyncs: Vec<Vsync> = VSYNCS.into_iter().filter(|&v| caps.present_modes.contains(&present_mode(v))).collect();
         // 8 bits a channel, sRGB
         let format = [wgpu::TextureFormat::Bgra8UnormSrgb, wgpu::TextureFormat::Rgba8UnormSrgb]
             .into_iter()
@@ -281,8 +289,9 @@ impl Gpu {
             color_space: wgpu::SurfaceColorSpace::Auto,
             width: w.max(1),
             height: h.max(1),
-            present_mode: present_mode(vsync),
-            desired_maximum_frame_latency: 2,
+            present_mode: present_mode(if vsyncs.contains(&vsync) { vsync } else { Vsync::On }),
+            // no frames queued behind the one being shown, so what's shown is as fresh as can be
+            desired_maximum_frame_latency: 1,
             alpha_mode: caps.alpha_modes[0],
             view_formats: Vec::new(),
         };
@@ -368,6 +377,7 @@ impl Gpu {
             queue,
             config,
             sample_counts,
+            vsyncs,
             draw_module,
             shapes_layout,
             compose_module,
@@ -397,13 +407,18 @@ impl Gpu {
         &self.sample_counts
     }
 
+    /// The vsync modes the surface supports, in the menu's order; always including `On`.
+    pub fn vsyncs(&self) -> &[Vsync] {
+        &self.vsyncs
+    }
+
     /// Whether `render` can return screenshots.
     pub fn can_capture(&self) -> bool {
         self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
     }
 
-    pub fn set_vsync(&mut self, on: bool) {
-        self.config.present_mode = present_mode(on);
+    pub fn set_vsync(&mut self, vsync: Vsync) {
+        self.config.present_mode = present_mode(if self.vsyncs.contains(&vsync) { vsync } else { Vsync::On });
         self.surface.configure(&self.device, &self.config);
     }
 
@@ -476,8 +491,22 @@ impl Gpu {
         self.target = Some(Target { size, samples, msaa, scene, bloom, frame, compose });
     }
 
-    /// Draws a frame and shows it; returns a screenshot of it if asked for one.
-    pub fn render(&mut self, f: Frame, capture: bool) -> Option<Image> {
+    /// The window's next image to draw into, waiting for one to be free (with vsync, until a
+    /// refresh), or none if there isn't one this time.
+    pub fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Draws a frame into an image from `acquire` and shows it; returns a screenshot of it if
+    /// asked for one.
+    pub fn render(&mut self, surface: wgpu::SurfaceTexture, f: Frame, capture: bool) -> Option<Image> {
         for g in f.glyphs.drain(..) {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &self.atlas, mip_level: 0, origin: wgpu::Origin3d { x: g.x, y: g.y, z: 0 }, aspect: wgpu::TextureAspect::All },
@@ -507,14 +536,6 @@ impl Gpu {
         self.queue.write_buffer(&self.screen, 0, bytemuck::cast_slice(&[f.size.0 as f32, f.size.1 as f32, 0.0, 0.0]));
         self.queue.write_buffer(&self.effects, 0, bytemuck::cast_slice(&[f.aberration, f.bloom, f.backdrop, 0.0]));
 
-        let surface = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return None;
-            }
-            _ => return None,
-        };
         let out = surface.texture.create_view(&Default::default());
 
         // the highest supported count not above the setting

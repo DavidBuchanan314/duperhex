@@ -6,7 +6,7 @@ use std::fmt::{self, Write};
 
 use crate::game::{EXTRAS, GAME_OVER_ZOOM, Game, Held, Menu, OPTIONS, Unlock};
 use crate::pack::{Announce, Colour, MenuColour, Rgb};
-use crate::save::{MAX_VOLUME, SPEEDS};
+use crate::save::{MAX_VOLUME, SPEEDS, Vsync};
 use crate::text::{Font, Size, TextItem};
 use crate::world::{self, Colours, Scene, slot};
 
@@ -474,7 +474,14 @@ impl<'f> Gui<'f> {
             let y = 180.0 + 40.0 * i as f64;
             match i {
                 0 => self.print(Centred(0.0), y, if s.fullscreen { "CHANGE TO WINDOW" } else { "CHANGE TO FULLSCREEN" }, WHITE),
-                1 => self.print(Centred(0.0), y, if s.vsync { "DISABLE VSYNC" } else { "ENABLE VSYNC" }, WHITE),
+                1 => {
+                    let mode = match s.vsync_mode {
+                        Vsync::Off => "OFF",
+                        Vsync::On => "ON",
+                        Vsync::Mailbox => "MAILBOX",
+                    };
+                    self.print(Centred(0.0), y, format_args!("VSYNC: {mode}"), WHITE)
+                }
                 2 => self.print(Centred(0.0), y, format_args!("MUSIC VOLUME: {} / {MAX_VOLUME}", s.music_volume), WHITE),
                 3 => self.print(Centred(0.0), y, format_args!("SOUND VOLUME: {} / {MAX_VOLUME}", s.sound_volume), WHITE),
                 _ => self.print(Centred(0.0), y, "DELETE RECORDS", WHITE),

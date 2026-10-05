@@ -11,11 +11,25 @@ pub const MAX_VOLUME: u32 = 10;
 /// The extras menu's game speeds, slowest first.
 pub const SPEEDS: [(&str, f64); 5] = [("SLOTH", 0.5), ("DAYCORE", 0.75), ("NORMAL", 1.0), ("NIGHTCORE", 1.35), ("CHIPMUNK", 1.75)];
 
+/// How frames are shown, in the menu's order.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Vsync {
+    /// Shown at once, tearing.
+    Off,
+    /// Queued for the screen's refreshes.
+    On,
+    /// The newest frame at each refresh, the rest dropped.
+    Mailbox,
+}
+
+pub const VSYNCS: [Vsync; 3] = [Vsync::Off, Vsync::On, Vsync::Mailbox];
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub fullscreen: bool,
-    pub vsync: bool,
+    pub vsync_mode: Vsync,
     /// 0..=MAX_VOLUME
     pub music_volume: u32,
     pub sound_volume: u32,
@@ -38,7 +52,7 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             fullscreen: false,
-            vsync: true,
+            vsync_mode: Vsync::On,
             music_volume: MAX_VOLUME,
             sound_volume: MAX_VOLUME,
             black_bars: false,

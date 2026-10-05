@@ -8,7 +8,7 @@ use std::ops::{BitOr, Range};
 use crate::audio::Audio;
 use crate::ids::{LevelId, SoundId};
 use crate::pack::{Announce, Pack};
-use crate::save::{MAX_VOLUME, SPEEDS, Save};
+use crate::save::{MAX_VOLUME, SPEEDS, Save, VSYNCS, Vsync};
 use crate::world::{self, Event, RunSetup, Scene, Turn, World};
 
 pub const OPTIONS: usize = 5;
@@ -134,6 +134,8 @@ pub struct Game {
     display_changed: bool,
     /// The antialiasing sample counts the GPU supports, ascending from 1.
     sample_counts: Vec<u32>,
+    /// The vsync modes the window supports, in the menu's order.
+    vsyncs: Vec<Vsync>,
     /// A game speed from the command line, in place of the saved one.
     speed_override: Option<f64>,
     /// The tutorial was finished this session, at a speed that doesn't save it.
@@ -162,7 +164,11 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(pack: &'static Pack, audio: Audio, save: Save, sample_counts: Vec<u32>, speed_override: Option<f64>, seed: u64) -> Game {
+    pub fn new(pack: &'static Pack, audio: Audio, mut save: Save,sample_counts: Vec<u32>, vsyncs: Vec<Vsync>, speed_override: Option<f64>, seed: u64) -> Game {
+        // a mode saved on another display may not be supported on this one
+        if !vsyncs.contains(&save.settings.vsync_mode) {
+            save.settings.vsync_mode = Vsync::On;
+        }
         let mut g = Game {
             pack,
             world: World::new(pack, seed),
@@ -171,6 +177,7 @@ impl Game {
             quit: false,
             display_changed: true,
             sample_counts,
+            vsyncs,
             speed_override,
             tutorial_seen: false,
             menu: Menu::Main,
@@ -585,7 +592,11 @@ impl Game {
                     let s = &mut self.save.settings;
                     match self.cursor {
                         0 => s.fullscreen = !s.fullscreen,
-                        1 => s.vsync = !s.vsync,
+                        1 => {
+                            // the next supported mode, wrapping round to the first
+                            let i = VSYNCS.iter().position(|&v| v == s.vsync_mode).unwrap();
+                            s.vsync_mode = VSYNCS[i + 1..].iter().chain(&VSYNCS).copied().find(|v| self.vsyncs.contains(v)).unwrap();
+                        }
                         2 => s.music_volume = (s.music_volume + 1) % (MAX_VOLUME + 1),
                         3 => s.sound_volume = (s.sound_volume + 1) % (MAX_VOLUME + 1),
                         _ => {

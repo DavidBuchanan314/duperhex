@@ -192,11 +192,11 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let save = save::Save::load(&pack.id);
     // SAFETY: the window is declared first, so it's dropped after the Gpu.
-    let mut gpu = unsafe { Gpu::new(&window, save.settings.vsync)? };
+    let mut gpu = unsafe { Gpu::new(&window, save.settings.vsync_mode)? };
     if dbg.wants_shots() && !gpu.can_capture() {
         return Err("screenshots: the window's surface can't be read back".into());
     }
-    let mut g = game::Game::new(pack, audio, save, gpu.sample_counts().to_vec(), args.speed, rand::random());
+    let mut g = game::Game::new(pack, audio, save, gpu.sample_counts().to_vec(), gpu.vsyncs().to_vec(), args.speed, rand::random());
     g.set_god(dbg.god);
     if let Some(li) = start {
         g.start_run(li);
@@ -217,8 +217,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             let s = &g.save().settings;
             window.set_fullscreen(s.fullscreen).ok();
             mouse.show_cursor(!s.fullscreen);
-            gpu.set_vsync(s.vsync);
+            gpu.set_vsync(s.vsync_mode);
         }
+        let (w, h) = window.size_in_pixels();
+        gpu.resize((w, h));
+        // wait for somewhere to draw before reading the clock and the input, so the frame shows
+        // the game as of the end of the wait rather than its start
+        let surface = gpu.acquire();
         let now = platform::ticks_ns();
         if g.speed() != clock.speed {
             clock = Clock { base: now, sim0: g.world().t(), speed: g.speed() };
@@ -274,9 +279,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             break;
         }
         dbg.trace(&g);
+        let Some(surface) = surface else { continue };
 
-        let (w, h) = window.size_in_pixels();
-        gpu.resize((w, h));
         let settings = &g.save().settings;
         let ((fw, fh), at) = frame_rect(w, h, settings.black_bars);
         scene.build(g.world(), fw as f64, fh as f64);
@@ -314,7 +318,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             bloom: if settings.bloom { render::bloom(g.world()) } else { 0.0 },
             backdrop: scene.backdrop,
         };
-        if let Some(image) = gpu.render(frame, dbg.shot_due(t))
+        if let Some(image) = gpu.render(surface, frame, dbg.shot_due(t))
             && dbg.save_shot(&image, t)
         {
             break 'run;
