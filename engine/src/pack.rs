@@ -13,9 +13,10 @@ use serde_json::Value as Json;
 
 use crate::ids::{DirectorId, Id, IdVec, LevelId, PatternId, RotationId, SoundId, TrackId};
 use crate::script::{Action, CounterId, Counters, Names, Val};
+use crate::world::SLOTS;
 use crate::weighted::Weighted;
 
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 /// Walls' sides are below this, outside a `rotate`.
 const PATTERN_SIDES: u32 = 6;
 
@@ -157,6 +158,7 @@ pub struct Menu {
     pub colour: MenuColour,
     pub border: bool,
     pub button_text: Rgb,
+    pub player_slot: usize,
 }
 
 #[derive(Deserialize)]
@@ -721,10 +723,13 @@ impl Pack {
         }
         let mut slots = HashSet::new();
         for l in &self.levels {
-            if let Some(m) = &l.menu
-                && !slots.insert(m.slot)
-            {
-                return err(format!("two levels in menu slot {}", m.slot));
+            if let Some(m) = &l.menu {
+                if !slots.insert(m.slot) {
+                    return err(format!("two levels in menu slot {}", m.slot));
+                }
+                if m.player_slot >= SLOTS {
+                    return err(format!("level {}: no palette slot {}", l.id, m.player_slot));
+                }
             }
             if let Some(u) = l.unlock
                 && self.levels[u].menu.is_none()

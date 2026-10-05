@@ -25,7 +25,6 @@ const PROMPT_RETRY: &str = "PRESS SPACE TO RETRY";
 const PROMPT_QUIT: &str = "ESC - QUIT";
 const PROMPT_CANCEL: &str = "ESC - CANCEL";
 const PROMPT_CONFIRM: &str = "PRESS SPACE TO CONFIRM";
-const PROMPT_CLEAR: &str = "C - CLEAR RECORDS";
 const PROMPT_SELECT: &str = "PRESS SPACE TO SELECT";
 
 /// Times are shown as seconds and ticks.
@@ -490,12 +489,7 @@ impl<'f> Gui<'f> {
         self.arrows(g.keys());
         self.corner_button(PROMPT_BACK, 0.0);
         let rewatch = g.ending_seen() && g.page == pages - 1;
-        if rewatch {
-            let temp = self.width(PROMPT_CONFIRM, Size::Normal) / 2.0 + 40.0;
-            self.button(cx - temp, 215.0, cx + temp, 250.0, -1.0);
-        }
 
-        self.print(Left(10.0), 1.0, PROMPT_CLEAR, WHITE);
         self.text(Centred(0.0), GUI_H - 150.0, &tx.title, WHITE, Size::Big);
         self.print(Right(w - 10.0), 1.0, PROMPT_BACK, WHITE);
         self.print(Centred(0.0), GUI_H - 30.0, &tx.thanks, WHITE);

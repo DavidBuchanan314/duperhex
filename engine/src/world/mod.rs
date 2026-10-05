@@ -612,6 +612,14 @@ impl World {
         (self.player.angle / self.side_width()).floor() as i32
     }
 
+    /// The palette slot the player is drawn in.
+    pub fn player_slot(&self) -> usize {
+        match self.scene {
+            Scene::StageSelect => self.pack.slot(self.slot).and_then(|li| self.pack.levels[li].menu.as_ref()).map_or(slot::PLAYER, |m| m.player_slot),
+            _ => slot::PLAYER,
+        }
+    }
+
     // ---------------------------------------------------------------------------------------
     // what the game does
 

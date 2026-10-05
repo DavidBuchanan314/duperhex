@@ -7,7 +7,7 @@ live. Everything in the pack is recovered from the game's own code and data.
 GAMECLASS_SIZE = 0xbfb0
 GAME = {
     'enemies': 0x168, 'nenemies': 0x2878, 'wavetimer': 0x28b4, 'speed': 0x28c0,
-    'speedramp': 0x28c8, 'pausewaves': 0x5464, 'credits': 0x55a0,
+    'speedramp': 0x28c8, 'pausewaves': 0x5464, 'nsides': 0xfc, 'credits': 0x55a0,
     'stage': 0x540c, 'menuscreen': 0x5448, 'menuselection': 0x544c, 'won': 0x5418, 'zoom': 0xf4,
     'gameovertimer': 0xec, 'timetable': 0x5480, 'inputtype': 0x5548, 'touchlayout': 0x3c, 'unlockevent': 0x556c, 'unlockeventtimer': 0x5574, 'hyper': 0x5460,
     'titlepage': 0xbfa4, 'menucursor': 0xbfa8, 'arcademode': 0x57b8, 'prompts': 0x54a8,

@@ -105,6 +105,8 @@ BOOL_VARS = {'palstate': 'palette_fading', 'sidechange': 'morphing', 'spinburst'
 COUNTERS = {'shapewavecounter': 'shape', 'hyperopening': 'hyper_opening', 'timelinestate': 'step',
             'timelinedelay': 'step_delay'}
 # the tutorial's own state; its text slide paces it, so there it is a counter too
+# how the ending hands over to the game-complete screen
+END_SEQUENCE = {'unlockevent': 2, 'blocked': 5, 'stage': 2}
 TUTORIAL_COUNTERS = {'tutorialstate': 'step', 'tutorialtimer': 'step_timer', 'menuslide': 'slide'}
 counters_in_use = COUNTERS
 FLOAT_FIELDS = {'time', 'speed', 'shapewavecounter', 'wavetimer', 'pulse', 'sidechangefreeze', 'fadetimer',
@@ -209,10 +211,9 @@ def actions(ast, in_wave):
             out.extend(call(*x['call']))
         else:
             raise LogicError('unexpected statement %r' % x)
-    # unlockevent = 2, blocked = 5, stage = 2: how the ending hands over to the game-complete screen
     ends = [a for a in out if '_end' in a]
     if ends:
-        if sorted(tuple(a['_end']) for a in ends) != [('blocked', 5), ('stage', 2), ('unlockevent', 2)]:
+        if sorted(tuple(a['_end']) for a in ends) != sorted(END_SEQUENCE.items()):
             raise LogicError('unrecognised end of sequence %r' % ends)
         at = out.index(ends[0])
         out = [a for a in out if '_end' not in a]
@@ -270,7 +271,7 @@ def write(out, field, v, in_wave):
         return [{'delay': v}]
     if field == 'blocked' and v == 0:
         return []  # the ending can't be hit, which is the engine's business
-    if field in ('unlockevent', 'blocked', 'stage'):
+    if field in END_SEQUENCE:
         return [{'_end': [field, v]}]
     if (field, v) in (('tutorial', 0), ('tutorialflag', 1)):
         return [{'_end_tutorial': field}]

@@ -227,7 +227,7 @@ impl Scene3d {
             } else {
                 (r + wl.dist / WALL_UNITS, r + (wl.dist + wl.len) / WALL_UNITS)
             };
-            let colour = if wl.side == pside { slot::NEAR_WALLS } else { slot::WALLS } + (i & 1);
+            let colour = if wl.side == pside && !ending { slot::NEAR_WALLS } else { slot::WALLS } + (i & 1);
             let (p0, p1, p2, p3) = (pt(a0, r0, 0.0), pt(a1, r0, 0.0), pt(a1, r1, 0.0), pt(a0, r1, 0.0));
             tri(p0, p1, p3, colour);
             tri(p1, p2, p3, colour);
@@ -257,7 +257,7 @@ impl Scene3d {
         }
         let body = |z| [0, 1, 2].map(|k| corner(k, PLAYER_SIZE, z));
         let [a, b, c] = body(0.0);
-        tri(a, b, c, slot::PLAYER);
+        tri(a, b, c, w.player_slot());
         let [a, b, c] = body(PLAYER_SHADOW);
         tri(a, b, c, slot::HIGHLIGHT);
     }

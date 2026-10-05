@@ -24,7 +24,7 @@ import logic  # noqa: E402
 import timeline  # noqa: E402
 
 BINARY_SHA256 = '6f13c58d136b84df212cc23a560f7383e2f689005af18072e51d8a7439d2ba1d'  # Linux build 8838351
-FORMAT = 2
+FORMAT = 3
 
 
 def setup(e):
@@ -425,7 +425,7 @@ def extract_font(e):
 
 # --- text ---------------------------------------------------------------------------------------
 
-def extract_text(e, levels, origin, n_ranks):
+def extract_text(e, levels, origin, screens, n_ranks):
     """Per level, how it looks in the stage select (menu levels only) and on its game-over screens;
     rank names, the completion messages and the credits.
 
@@ -440,6 +440,8 @@ def extract_text(e, levels, origin, n_ranks):
     - each level's stage select and game-over screens: the colour a prompt is printed in, by
       drawing with a placeholder string in it; whether the panels have a border, by drawing the
       shapes (gameclass::drawgui_shapes) and reading graphicsclass::skewflip as each is drawn;
+      the palette slot the stage select's player is drawn in, by drawing the scene
+      (graphicsclass::draw3dscene) and catching the colour of each triangle;
     - game over, with no unlock, a level unlocked, a hyper level unlocked and the game completed:
       what all three unlocks print is the heading, what both level unlocks print is the level
       complete line, and what each prints alone is its message. The completed-level count is
@@ -544,6 +546,23 @@ def extract_text(e, levels, origin, n_ranks):
             raise RuntimeError('prompt %d not printed with stage %d, %r' % (index, stage, state))
         return list(colours['PROMPT'])
 
+    triangles = []
+    e.stub('_ZN13graphicsclass10draw3dquadER9gameclassiiiiii', lambda e: None)
+    e.stub('_ZN13graphicsclass14draw3dtriangleER9gameclassiiii', lambda e: triangles.append(e.iarg(5)))
+
+    def player_slot(selection):
+        g = C.GAME
+        e.put_i32(game + g['stage'], -2)
+        e.put_i32(game + g['menuselection'], selection)
+        e.put_f32(game + g['gameovertimer'], 0.0)
+        e.put_i32(game + g['nsides'], 6)
+        e.put_i32(game + g['nenemies'], 0)
+        del triangles[:]
+        e.call('_ZN13graphicsclass11draw3dsceneER9gameclass', gfx, game)
+        if len(triangles) != 2:
+            raise RuntimeError('expected the player and its shadow, got %r' % triangles)
+        return triangles[0]
+
     def one(found, what):
         found = set(found)
         if len(found) != 1:
@@ -557,7 +576,7 @@ def extract_text(e, levels, origin, n_ranks):
     if len(badges) != 1:
         raise RuntimeError('no unique hyper badge: %r' % badges)
     badge = badges.pop()
-    out = OrderedDict((lid, OrderedDict()) for lid in origin)
+    out = OrderedDict((lid, OrderedDict()) for lid in screens)
     for lid, strs in shown.items():
         others = set().union(*(s for k, s in shown.items() if k != lid))
         diff = strs - others
@@ -573,7 +592,8 @@ def extract_text(e, levels, origin, n_ranks):
         m['colour'] = menu_colour(e, lambda: draw(-2, slot, big=True), colours, gfx, helper)
         m['border'] = bordered(-2, selection=slot)
         m['button_text'] = prompt_colour(1, -2, selection=slot)
-    for lid, (stage, hyper_) in origin.items():
+        m['player_slot'] = player_slot(slot)
+    for lid, (stage, hyper_) in screens.items():
         out[lid]['game_over'] = OrderedDict(
             border=bordered(stage, hyper=hyper_, menu=True),
             button_text=prompt_colour(2, stage, hyper=hyper_, menu=True),
@@ -724,7 +744,9 @@ def main():
     patterns = extract_patterns(e, rnd, markers)
     print('  %d patterns' % len(patterns))
     print('text...')
-    level_text, rank_names, title, text = extract_text(e, setups, origin, len(times) + 1)
+    # the ending's game-over screens come after its hand-over, which sets the stage
+    screens = dict(origin, ending=(logic.END_SEQUENCE['stage'], 1))
+    level_text, rank_names, title, text = extract_text(e, setups, origin, screens, len(times) + 1)
     pulses = LV.pulse_rules(e, rnd, origin)
     print('logic...')
     lifted, on_hit, tutorial = logic.lift_all(binary)
