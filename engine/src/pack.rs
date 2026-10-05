@@ -577,8 +577,11 @@ impl Pack {
             format: u32,
         }
         let format: RawFormat = json(&files, "pack.json")?;
-        if format.format != FORMAT {
-            return err(format!("unknown pack format {}", format.format));
+        if format.format < FORMAT {
+            return err(format!("pack format {} is too old, expected {FORMAT}. Re-run the extractor.", format.format));
+        }
+        if format.format > FORMAT {
+            return err(format!("pack format {} is too new, expected {FORMAT}. Update duperhex.", format.format));
         }
         let manifest: RawManifest = json(&files, "pack.json")?;
         let audio: RawAudio = json(&files, &manifest.files.audio)?;
