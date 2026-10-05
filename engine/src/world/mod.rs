@@ -14,7 +14,7 @@ mod layout;
 mod pal;
 
 use crate::ids::{Id, LevelId, RotationId, SoundId, TrackId};
-use crate::pack::{Body, Choice, EventKind, LevelKind, Pack, PaletteId, WallSpec};
+use crate::pack::{Body, Choice, EventKind, LevelKind, Pack, Motion, PaletteId, WallSpec};
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
 use rand::{RngExt, SeedableRng};
@@ -1207,9 +1207,9 @@ impl World {
             match v.burst {
                 Burst::None => {
                     if let Some(m) = mode {
-                        match m.spin {
-                            Some(r) => v.spin += r * rem,
-                            None => v.spin = approach(v.spin, m.settle, m.settle_rate * rem),
+                        match m.motion {
+                            Motion::Spin { spin } => v.spin += spin * rem,
+                            Motion::Settle { settle, settle_rate } => v.spin = approach(v.spin, settle, settle_rate * rem),
                         }
                     }
                     rem = 0.0;

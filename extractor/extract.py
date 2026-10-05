@@ -24,7 +24,7 @@ import logic  # noqa: E402
 import timeline  # noqa: E402
 
 BINARY_SHA256 = '6f13c58d136b84df212cc23a560f7383e2f689005af18072e51d8a7439d2ba1d'  # Linux build 8838351
-FORMAT = 1
+FORMAT = 2
 
 
 def setup(e):
@@ -426,8 +426,8 @@ def extract_font(e):
 # --- text ---------------------------------------------------------------------------------------
 
 def extract_text(e, levels, origin, n_ranks):
-    """Level names and difficulty labels, the hyper badge, rank names, the completion messages and
-    the credits.
+    """Per level, how it looks in the stage select (menu levels only) and on its game-over screens;
+    rank names, the completion messages and the credits.
 
     Names come from gameclass::stagename and getlevel, the testers from initcredits. The rest is
     found by drawing the GUI (gameclass::drawgui_text) and comparing what it prints:
@@ -437,6 +437,9 @@ def extract_text(e, levels, origin, n_ranks):
       difficulty; the one printed for every hyper level and no other is the hyper badge. The
       colour the level's name is printed in is recovered by drawing it again with the GUI glow,
       the slow sine counter and the on-screen palette varied (see menu_colour);
+    - each level's stage select and game-over screens: the colour a prompt is printed in, by
+      drawing with a placeholder string in it; whether the panels have a border, by drawing the
+      shapes (gameclass::drawgui_shapes) and reading graphicsclass::skewflip as each is drawn;
     - game over, with no unlock, a level unlocked, a hyper level unlocked and the game completed:
       what all three unlocks print is the heading, what both level unlocks print is the level
       complete line, and what each prints alone is its message. The completed-level count is
@@ -477,9 +480,19 @@ def extract_text(e, levels, origin, n_ranks):
         e.stub(fn, lambda e, big='big' in fn: on_print(e, big))
     for fn in ('_ZN13graphicsclass3lenESsi', '_ZN13graphicsclass9drawimageEiiib', '_Z10ofSetColoriii',
                '_Z16ofBigPictureModev', '_ZN9gameclass14drawleftbuttonER13graphicsclassiib',
-               '_ZN9gameclass15drawrightbuttonER13graphicsclassiib', '_Z14superRemainderdi',
-               '_ZN9gameclass19drawskewpoly_centerER13graphicsclassiiiii'):
+               '_ZN9gameclass15drawrightbuttonER13graphicsclassiib', '_Z14superRemainderdi'):
         e.stub(fn, lambda e: e.ret(0))
+    borders = []
+    def panel(e):
+        borders.append(e.read(gfx + C.GRAPHICS['skewflip'], 1) != b'\0')
+    for fn in ('_ZN9gameclass19drawskewpoly_centerER13graphicsclassiiiii',
+               '_ZN9gameclass17drawskewpoly_leftER13graphicsclassiiii'):
+        e.stub(fn, panel)
+    e.stub('_ZN9gameclass26drawskewpoly_center_borderER13graphicsclassiiiii', lambda e: borders.append(True))
+    for fn in ('_ZN9gameclass13drawgui3dquadER13graphicsclassddddddddi', '_ZN9gameclass11drawguipolyER13graphicsclassiiiiiiii',
+               '_ZN9gameclass26drawskewpoly_center_buttonER13graphicsclassiiiii', '_ZN9gameclass8drawlineER13graphicsclassiiiii',
+               '_ZN9gameclass9drawlevelER13graphicsclassiiiii'):
+        e.stub(fn, lambda e: None)
 
     def empty(e):
         e.string_set(e.arg(0), b'')
@@ -493,7 +506,8 @@ def extract_text(e, levels, origin, n_ranks):
                '_ZN9gameclass14getcontrolnameESs', '_ZN9gameclass7getbestER9helpclass', '_ZN9helpclass9twodigitsEi'):
         e.stub(fn, empty)
 
-    def draw(stage, selection=0, won=1, menuscreen=0, menu=False, unlock=0, hyper=0, big=False, title=(0, 0, 0)):
+    def draw(stage, selection=0, won=1, menuscreen=0, menu=False, unlock=0, hyper=0, big=False, title=(0, 0, 0),
+             shapes=False):
         g = C.GAME
         for f, v in zip(('titlepage', 'menucursor', 'arcademode'), title):
             e.put_i32(game + g[f], v) if f != 'arcademode' else e.write(game + g[f], bytes([v]))
@@ -507,9 +521,28 @@ def extract_text(e, levels, origin, n_ranks):
         # menus and the game-over screen are drawn once the game has zoomed out
         e.put_i32(game + g['zoom'], 320 if menu else 0)
         e.put_f32(game + g['gameovertimer'], 100.0 if menu else 0.0)
+        e.put_f32(game + g['unlockeventtimer'], 60.0)
+        if shapes:
+            e.call('_ZN9gameclass14drawgui_shapesER13graphicsclassR9helpclass', game, gfx, helper)
+            return
         del printed[:]
         e.call('_ZN9gameclass12drawgui_textER13graphicsclassR9helpclass', game, gfx, helper)
         return [(p, b) if big else p for p, b in printed if p]
+
+    def bordered(stage, **state):
+        del borders[:]
+        draw(stage, shapes=True, **state)
+        return any(borders)
+
+    def prompt_colour(index, stage, **state):
+        prompt = game + C.GAME['prompts'] + 8 * index
+        e.string_set(prompt, b'PROMPT')
+        colours.pop('PROMPT', None)
+        draw(stage, **state)
+        e.string_set(prompt, b'')
+        if 'PROMPT' not in colours:
+            raise RuntimeError('prompt %d not printed with stage %d, %r' % (index, stage, state))
+        return list(colours['PROMPT'])
 
     def one(found, what):
         found = set(found)
@@ -520,7 +553,11 @@ def extract_text(e, levels, origin, n_ranks):
     menu = [l for l in levels.values() if 'menu_slot' in l]
     shown = {l['id']: set(draw(-2, l['menu_slot'])) for l in menu}
     hyper = {lid for lid in shown if origin[lid][1]}
-    out = OrderedDict()
+    badges = set.intersection(*(shown[h] for h in hyper)) - set().union(*(shown[k] for k in shown if k not in hyper))
+    if len(badges) != 1:
+        raise RuntimeError('no unique hyper badge: %r' % badges)
+    badge = badges.pop()
+    out = OrderedDict((lid, OrderedDict()) for lid in origin)
     for lid, strs in shown.items():
         others = set().union(*(s for k, s in shown.items() if k != lid))
         diff = strs - others
@@ -530,13 +567,17 @@ def extract_text(e, levels, origin, n_ranks):
         # the name is the stage select's big text (hyper levels show their normal level's name,
         # with the badge)
         name = one([s for s, big in draw(-2, slot, big=True) if big], 'stage select name')
-        out[lid] = OrderedDict(name=name, difficulty=diff.pop(),
-                               menu_colour=menu_colour(e, lambda: draw(-2, slot, big=True), colours, gfx, helper))
-        out[lid].update(menu_panels(e, game, gfx, helper, slot, colours, lambda: draw(-2, slot)))
-    badges = set.intersection(*(shown[h] for h in hyper)) - set().union(*(shown[k] for k in shown if k not in hyper))
-    if len(badges) != 1:
-        raise RuntimeError('no unique hyper badge: %r' % badges)
-    badge = badges.pop()
+        m = out[lid]['menu'] = OrderedDict(slot=slot, name=name, difficulty=diff.pop())
+        if lid in hyper:
+            m['badge'] = badge
+        m['colour'] = menu_colour(e, lambda: draw(-2, slot, big=True), colours, gfx, helper)
+        m['border'] = bordered(-2, selection=slot)
+        m['button_text'] = prompt_colour(1, -2, selection=slot)
+    for lid, (stage, hyper_) in origin.items():
+        out[lid]['game_over'] = OrderedDict(
+            border=bordered(stage, hyper=hyper_, menu=True),
+            button_text=prompt_colour(2, stage, hyper=hyper_, menu=True),
+            continue_text=prompt_colour(5, stage, hyper=hyper_, menu=True, unlock=1))
 
     states = [draw(-1, menu=True, big=True, title=(p, c, a)) for p in range(3) for c in range(3) for a in range(2)]
     title_lines = [s.strip() for s, big in states[0] if big and all((s, big) in st for st in states)]
@@ -575,29 +616,7 @@ def extract_text(e, levels, origin, n_ranks):
             entry['url'] = url
     credits = OrderedDict(title=title, thanks=thanks, main=entries, testers_heading=testers_heading,
                           testers=testers, rewatch_ending=rewatch)
-    return out, badge, ranks, title_lines, OrderedDict(completion=completion, credits=credits)
-
-
-def menu_panels(e, game, gfx, helper, slot, colours, draw_text):
-    """How a level's panels look: whether the stage select draws its panel with a border
-    (gameclass::drawgui_shapes, with the panel functions stubbed), and the colour of text on its
-    buttons (the start prompt, printed by drawgui_text)."""
-    G = C.GAME
-    bordered = []
-    e.stub('_ZN9gameclass26drawskewpoly_center_borderER13graphicsclassiiiii', lambda e: bordered.append(True))
-    for fn in ('_ZN9gameclass13drawgui3dquadER13graphicsclassddddddddi', '_ZN9gameclass11drawguipolyER13graphicsclassiiiiiiii',
-               '_ZN9gameclass26drawskewpoly_center_buttonER13graphicsclassiiiii',
-               '_ZN9gameclass17drawskewpoly_leftER13graphicsclassiiii', '_ZN9gameclass8drawlineER13graphicsclassiiiii'):
-        e.stub(fn, lambda e: None)
-    e.put_i32(game + G['stage'], -2)
-    e.put_i32(game + G['menuselection'], slot)
-    e.call('_ZN9gameclass14drawgui_shapesER13graphicsclassR9helpclass', game, gfx, helper)
-
-    prompt = game + G['prompts'] + 8 * 1  # prompts[1], the start prompt
-    e.string_set(prompt, b'START PROMPT')
-    draw_text()
-    e.string_set(prompt, b'')
-    return OrderedDict(panel_border=bool(bordered), button_text=list(colours['START PROMPT']))
+    return out, ranks, title_lines, OrderedDict(completion=completion, credits=credits)
 
 
 def menu_colour(e, draw, colours, gfx, helper):
@@ -705,7 +724,7 @@ def main():
     patterns = extract_patterns(e, rnd, markers)
     print('  %d patterns' % len(patterns))
     print('text...')
-    level_text, badge, rank_names, title, text = extract_text(e, setups, origin, len(times) + 1)
+    level_text, rank_names, title, text = extract_text(e, setups, origin, len(times) + 1)
     pulses = LV.pulse_rules(e, rnd, origin)
     print('logic...')
     lifted, on_hit, tutorial = logic.lift_all(binary)
@@ -730,11 +749,8 @@ def main():
     for lid, level_setup in setups.items():
         on_tick, on_wave = lifted[level_setup['director']]
         lvl = OrderedDict(id=lid)
-        if lid in level_text:
-            lvl.update(level_text[lid])
-            if origin[lid][1]:
-                lvl['badge'] = badge
-        lvl.update((k, v) for k, v in level_setup.items() if k not in ('id', 'counters'))
+        lvl.update(level_text[lid])
+        lvl.update((k, v) for k, v in level_setup.items() if k not in ('id', 'counters', 'menu_slot'))
         lvl['beat_divisor'], frozen = pulses[lid]
         if frozen is not None:
             lvl['frozen_pulse'] = frozen

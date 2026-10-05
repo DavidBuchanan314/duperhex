@@ -15,7 +15,7 @@ use crate::ids::{DirectorId, Id, IdVec, LevelId, PatternId, RotationId, SoundId,
 use crate::script::{Action, CounterId, Counters, Names, Val};
 use crate::weighted::Weighted;
 
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 /// Walls' sides are below this, outside a `rotate`.
 const PATTERN_SIDES: u32 = 6;
 
@@ -53,24 +53,17 @@ pub struct PaletteId(pub i32);
 
 #[derive(Deserialize)]
 pub struct RotationMode {
-    /// Degrees per tick, or None for a settling mode.
-    pub spin: Option<f64>,
-    #[serde(default)]
-    pub settle: f64,
-    #[serde(default)]
-    pub settle_rate: f64,
-    #[serde(default)]
+    #[serde(flatten)]
+    pub motion: Motion,
     pub sway: f64,
-    #[serde(default = "one")]
     pub burst: f64,
 }
 
-fn one() -> f64 {
-    1.0
-}
-
-fn yes() -> bool {
-    true
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum Motion {
+    Spin { spin: f64 },
+    Settle { settle: f64, settle_rate: f64 },
 }
 
 pub struct Rank {
@@ -80,19 +73,17 @@ pub struct Rank {
     pub completes_level: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Default, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Announce {
     NewHyper,
     SidesComplete,
     GameComplete,
-    #[default]
     Congratulations,
 }
 
 #[derive(Deserialize)]
 pub struct Completion {
-    #[serde(default)]
     pub announce: Announce,
     #[serde(default)]
     pub finale: bool,
@@ -157,15 +148,28 @@ impl From<RawMenuColour> for MenuColour {
     }
 }
 
-pub struct Level {
-    pub id: String,
+#[derive(Deserialize)]
+pub struct Menu {
+    pub slot: usize,
     pub name: String,
     pub difficulty: String,
     pub badge: Option<String>,
-    pub menu_slot: Option<usize>,
-    pub menu_colour: Option<MenuColour>,
-    pub panel_border: bool,
+    pub colour: MenuColour,
+    pub border: bool,
     pub button_text: Rgb,
+}
+
+#[derive(Deserialize)]
+pub struct GameOver {
+    pub border: bool,
+    pub button_text: Rgb,
+    pub continue_text: Rgb,
+}
+
+pub struct Level {
+    pub id: String,
+    pub menu: Option<Menu>,
+    pub game_over: GameOver,
     /// The level whose completion unlocks this one.
     pub unlock: Option<LevelId>,
     pub kind: LevelKind,
@@ -200,16 +204,14 @@ pub struct Tutorial {
     pub on_death: Vec<Action>,
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
+#[derive(Deserialize)]
 pub struct CreditEntry {
     pub role: String,
     pub name: String,
     pub site: String,
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
+#[derive(Deserialize)]
 pub struct CompletionText {
     pub heading: String,
     pub level_complete: String,
@@ -218,8 +220,7 @@ pub struct CompletionText {
     pub game_complete: String,
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
+#[derive(Deserialize)]
 pub struct CreditsText {
     pub title: String,
     pub thanks: String,
@@ -229,8 +230,7 @@ pub struct CreditsText {
     pub rewatch_ending: String,
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
+#[derive(Deserialize)]
 pub struct Text {
     pub completion: CompletionText,
     pub credits: CreditsText,
@@ -343,18 +343,12 @@ impl Files {
 
 #[derive(Deserialize)]
 struct RawManifest {
-    #[serde(default = "default_id")]
     id: String,
-    #[serde(default)]
     title: Vec<String>,
     files: RawFiles,
     font: String,
     rotation_modes: BTreeMap<i64, RotationMode>,
     ranks: Vec<RawRank>,
-}
-
-fn default_id() -> String {
-    "pack".into()
 }
 
 #[derive(Deserialize)]
@@ -369,7 +363,6 @@ struct RawFiles {
 
 #[derive(Deserialize)]
 struct RawRank {
-    #[serde(default)]
     name: String,
     at: i64,
     voice: Option<String>,
@@ -381,7 +374,6 @@ struct RawRank {
 struct RawAudio {
     music: BTreeMap<String, RawTrack>,
     sounds: BTreeMap<String, String>,
-    #[serde(default)]
     roles: BTreeMap<String, OneOrMany>,
 }
 
@@ -391,7 +383,7 @@ struct RawTrack {
     length_ms: f64,
     beats: String,
     restart_points_ms: Vec<(u32, f64)>,
-    #[serde(rename = "loop", default = "yes")]
+    #[serde(rename = "loop")]
     looping: bool,
 }
 
@@ -446,33 +438,21 @@ struct RawLevels {
 #[derive(Deserialize)]
 struct RawLevel {
     id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    difficulty: String,
-    badge: Option<String>,
-    menu_slot: Option<usize>,
-    menu_colour: Option<MenuColour>,
-    #[serde(default)]
-    panel_border: bool,
-    #[serde(default = "white")]
-    button_text: Rgb,
+    menu: Option<Menu>,
+    game_over: GameOver,
     unlock: Option<RawUnlock>,
     #[serde(default)]
     kind: LevelKind,
     music: Option<String>,
     palette: PaletteId,
     turn_speed: f64,
-    #[serde(default)]
     centre_flip: bool,
     rotation: Vec<i64>,
     start: RawStart,
     time_offset: i64,
-    #[serde(default = "default_beat_divisor")]
     beat_divisor: i32,
     frozen_pulse: Option<f64>,
     director: String,
-    #[serde(default)]
     counters: BTreeMap<String, Val>,
     #[serde(default)]
     on_tick: Json,
@@ -481,14 +461,6 @@ struct RawLevel {
     #[serde(default)]
     camera: RawCamera,
     completion: Option<Completion>,
-}
-
-fn white() -> Rgb {
-    [255.0; 3]
-}
-
-fn default_beat_divisor() -> i32 {
-    2
 }
 
 #[derive(Clone, Copy, Deserialize, Default, PartialEq, Debug)]
@@ -528,23 +500,16 @@ struct RawCamera {
 
 #[derive(Deserialize)]
 struct RawTutorial {
-    #[serde(default)]
     counters: BTreeMap<String, Val>,
-    #[serde(default)]
     on_tick: Json,
-    #[serde(default)]
     on_wave: Json,
-    #[serde(default)]
     on_death: Json,
 }
 
 #[derive(Deserialize)]
 struct RawFinale {
-    #[serde(default)]
     on_hit: Json,
-    #[serde(default)]
     on_tick: Json,
-    #[serde(default)]
     on_wave: Json,
 }
 
@@ -568,7 +533,7 @@ fn numbered<I: Id>(names: impl IntoIterator<Item = String>) -> HashMap<String, I
 impl Pack {
     /// The level in a stage select slot.
     pub fn slot(&self, slot: usize) -> Option<LevelId> {
-        self.levels.position(|l| l.menu_slot == Some(slot))
+        self.levels.position(|l| l.menu.as_ref().is_some_and(|m| m.slot == slot))
     }
 
     pub fn level(&self, id: &str) -> Option<LevelId> {
@@ -756,10 +721,15 @@ impl Pack {
         }
         let mut slots = HashSet::new();
         for l in &self.levels {
-            if let Some(s) = l.menu_slot
-                && !slots.insert(s)
+            if let Some(m) = &l.menu
+                && !slots.insert(m.slot)
             {
-                return err(format!("two levels in menu slot {s}"));
+                return err(format!("two levels in menu slot {}", m.slot));
+            }
+            if let Some(u) = l.unlock
+                && self.levels[u].menu.is_none()
+            {
+                return err(format!("level {}: unlocked by {}, which is not in the stage select", l.id, self.levels[u].id));
             }
             if !self.palettes.contains_key(&l.palette) {
                 return err(format!("level {}: no palette {}", l.id, l.palette.0));
@@ -796,20 +766,18 @@ fn level(
         on_tick: names.actions(&l.on_tick)?,
         timeline: l.timeline.into_iter().map(|e| Ok((e.at, names.actions(&e.actions)?))).collect::<Result<_, Error>>()?,
         id: l.id,
-        name: l.name,
-        difficulty: l.difficulty,
-        badge: l.badge,
-        menu_slot: l.menu_slot,
-        menu_colour: l.menu_colour,
-        panel_border: l.panel_border,
-        button_text: l.button_text,
+        menu: l.menu,
+        game_over: l.game_over,
         palette: l.palette,
         turn_speed: l.turn_speed,
         centre_flip: l.centre_flip,
         start_wave: l.start.wave,
         start_speed: l.start.speed,
         time_offset: l.time_offset,
-        beat_divisor: l.beat_divisor.max(1),
+        beat_divisor: match l.beat_divisor {
+            d if d < 1 => return err(format!("beat divisor {d}")),
+            d => d,
+        },
         frozen_pulse: l.frozen_pulse,
         camera_lean: l.camera.lean,
         camera_sway: l.camera.sway,

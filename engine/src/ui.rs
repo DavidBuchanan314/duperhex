@@ -5,7 +5,7 @@
 use std::fmt::{self, Write};
 
 use crate::game::{GAME_OVER_ZOOM, Game, Held, Menu, OPTIONS, Unlock};
-use crate::pack::{Announce, Colour, Level, Rgb};
+use crate::pack::{Announce, Colour, MenuColour, Rgb};
 use crate::save::MAX_VOLUME;
 use crate::text::{Font, Size, TextItem};
 use crate::world::{self, Colours, Scene, slot};
@@ -283,8 +283,12 @@ impl<'f> Gui<'f> {
             Scene::Title => None,
         }
         .map(|li| &pack.levels[li]);
-        let on_button = styled.map_or(WHITE, |l| l.button_text);
-        self.flip = styled.is_some_and(|l| l.panel_border);
+        let (on_button, border) = match world.scene() {
+            Scene::StageSelect => styled.and_then(|l| l.menu.as_ref()).map_or((WHITE, false), |m| (m.button_text, m.border)),
+            Scene::Run => styled.map_or((WHITE, false), |l| (l.game_over.button_text, l.game_over.border)),
+            Scene::Title => (WHITE, false),
+        };
+        self.flip = border;
 
         let in_play = world.over() <= 1 || world.view().zoom < GAME_OVER_ZOOM;
         match world.scene() {
@@ -371,7 +375,7 @@ impl<'f> Gui<'f> {
 
         // top right: the time
         let temp = (digits(time / TPS) as f64 - 1.0) * 35.0;
-        let badge = pack.levels[world.run_level()].badge.as_deref();
+        let badge = pack.levels[world.run_level()].menu.as_ref().and_then(|m| m.badge.as_deref());
         let (a, b) = if badge.is_some() { (334.0, 311.0) } else { (234.0, 211.0) };
         self.poly([(w - a - temp, 0.0), (w - b - temp, 32.0), (w, 32.0), (w, 0.0)]);
         self.poly([(w - 129.0 - temp, 0.0), (w - 101.0 - temp, 52.0), (w, 52.0), (w, 0.0)]);
@@ -380,13 +384,10 @@ impl<'f> Gui<'f> {
         self.print(Left(w - 55.0), 22.0, format_args!(":{:02}", time % TPS), grey(215.0));
     }
 
-    fn menu_colour(&self, l: &Level, g: &Game) -> Rgb {
-        match &l.menu_colour {
-            Some(mc) => match &mc.frames[(g.world().t() / mc.ticks) as usize % mc.frames.len()] {
-                Colour::Rgb(ch) => ch.map(|c| c.base + c.glow * g.world().view().glow),
-                Colour::Slot { slot } => self.pal[*slot],
-            },
-            None => WHITE,
+    fn menu_colour(&self, mc: &MenuColour, g: &Game) -> Rgb {
+        match &mc.frames[(g.world().t() / mc.ticks) as usize % mc.frames.len()] {
+            Colour::Rgb(ch) => ch.map(|c| c.base + c.glow * g.world().view().glow),
+            Colour::Slot { slot } => self.pal[*slot],
         }
     }
 
@@ -401,9 +402,8 @@ impl<'f> Gui<'f> {
         self.skew_center(0.0, 75.0, w, 200.0, 1.0);
 
         let level = pack.slot(g.world().slot());
-        match level.filter(|&li| g.unlocked(li)) {
-            Some(li) => {
-                let l = &pack.levels[li];
+        match level.filter(|&li| g.unlocked(li)).and_then(|li| Some((li, pack.levels[li].menu.as_ref()?))) {
+            Some((li, l)) => {
                 if let Some(badge) = &l.badge {
                     let x = w - self.width(badge, Size::Normal) - 35.0;
                     let flip = std::mem::replace(&mut self.flip, false);
@@ -413,7 +413,7 @@ impl<'f> Gui<'f> {
                 let temp = self.width(PROMPT_START, Size::Normal) / 2.0 + 40.0;
                 self.button(cx - temp, 215.0, cx + temp, 250.0, -1.0);
 
-                let name_col = self.menu_colour(l, g);
+                let name_col = self.menu_colour(&l.colour, g);
                 let best = g.best(li);
                 self.text(Left(180.0), 85.0, &l.name, name_col, Size::Big);
                 self.print(Left(200.0), 135.0, "DIFFICULTY:", GREY);
@@ -428,8 +428,10 @@ impl<'f> Gui<'f> {
             }
             None => {
                 self.text(Centred(0.0), 85.0, "LOCKED", self.pal[7], Size::Big);
-                if let Some(n) = level.and_then(|li| pack.levels[li].unlock) {
-                    self.print(Centred(0.0), 150.0, format_args!("COMPLETE {} TO UNLOCK", pack.levels[n].name), WHITE);
+                if let Some(n) = level.and_then(|li| pack.levels[li].unlock)
+                    && let Some(m) = &pack.levels[n].menu
+                {
+                    self.print(Centred(0.0), 150.0, format_args!("COMPLETE {} TO UNLOCK", m.name), WHITE);
                 }
                 self.print(Right(w - 10.0), 1.0, PROMPT_BACK, WHITE);
             }
@@ -549,6 +551,7 @@ impl<'f> Gui<'f> {
         let cx = self.cx();
 
         if g.unlock != Unlock::None {
+            self.flip = false;
             self.skew_left(0.0, 175.0, w, 300.0);
             if g.unlock_ready() {
                 let temp = self.width(PROMPT_CONTINUE, Size::Normal) / 2.0 + 20.0;
@@ -575,7 +578,8 @@ impl<'f> Gui<'f> {
                 _ => {}
             }
             if g.unlock_ready() {
-                self.print(Centred(0.0), 320.0, PROMPT_CONTINUE, on_button);
+                let col = pack.levels[world.run_level()].game_over.continue_text;
+                self.print(Centred(0.0), 320.0, PROMPT_CONTINUE, col);
             }
             return;
         }

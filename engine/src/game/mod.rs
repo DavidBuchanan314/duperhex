@@ -556,7 +556,7 @@ impl Game {
             }
             return;
         }
-        let run_slot = pack.levels[self.world.run_level()].menu_slot.unwrap_or(0);
+        let run_slot = pack.levels[self.world.run_level()].menu.as_ref().map_or(0, |m| m.slot);
         if self.unlock != Unlock::None {
             if self.world.view().zoom < world::ZOOM_OUT {
                 return;
@@ -571,7 +571,7 @@ impl Game {
                 _ => {
                     // point at what this level unlocked
                     let run = self.world.run_level();
-                    let slot = pack.levels.iter().find(|l| l.unlock == Some(run)).and_then(|l| l.menu_slot).unwrap_or(run_slot);
+                    let slot = pack.levels.iter().find(|l| l.unlock == Some(run)).and_then(|l| l.menu.as_ref()).map_or(run_slot, |m| m.slot);
                     self.go_stage_select(slot);
                     self.world.flash(world::FLASH);
                     self.world.reset_music();

@@ -9,10 +9,10 @@ GAME = {
     'enemies': 0x168, 'nenemies': 0x2878, 'wavetimer': 0x28b4, 'speed': 0x28c0,
     'speedramp': 0x28c8, 'pausewaves': 0x5464, 'credits': 0x55a0,
     'stage': 0x540c, 'menuscreen': 0x5448, 'menuselection': 0x544c, 'won': 0x5418, 'zoom': 0xf4,
-    'gameovertimer': 0xec, 'timetable': 0x5480, 'inputtype': 0x5548, 'touchlayout': 0x3c, 'unlockevent': 0x556c, 'hyper': 0x5460,
+    'gameovertimer': 0xec, 'timetable': 0x5480, 'inputtype': 0x5548, 'touchlayout': 0x3c, 'unlockevent': 0x556c, 'unlockeventtimer': 0x5574, 'hyper': 0x5460,
     'titlepage': 0xbfa4, 'menucursor': 0xbfa8, 'arcademode': 0x57b8, 'prompts': 0x54a8,
 }
-GRAPHICS = {'screenw': 0x0, 'ui': 0x6c, 'curpal_r': 0x26d0, 'curpal_g': 0x26f8, 'curpal_b': 0x2720}
+GRAPHICS = {'screenw': 0x0, 'ui': 0x6c, 'skewflip': 0x2754, 'curpal_r': 0x26d0, 'curpal_g': 0x26f8, 'curpal_b': 0x2720}
 HELP = {'glow': 0x60, 'slowsine': 0x64}
 SUPERHEX = {'game': 0x18, 'graphics': 0xbfc8, 'mouseclicked': 0x3c464, 'touchx': 0x3c468, 'touchy': 0x3c490}
 # std::string members, (offset, count), which must hold valid strings before the GUI code runs

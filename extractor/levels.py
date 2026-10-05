@@ -370,6 +370,7 @@ def _extract_levels(e, m):
     ending['director'] = 'ending'
     ending['counters'] = counters
     levels['ending'] = ending
+    origin['ending'] = (m['stage'], 1)
     return levels, switch_levels, origin, sounds
 
 
