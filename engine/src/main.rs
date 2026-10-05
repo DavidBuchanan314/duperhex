@@ -1,6 +1,8 @@
 mod audio;
+mod colour;
 mod debug;
 mod game;
+mod gpu;
 mod ids;
 mod installed;
 mod pack;
@@ -18,25 +20,30 @@ use std::path::PathBuf;
 
 use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
-use sdl3::pixels::PixelFormat;
-use sdl3::render::{FPoint, FRect, ScaleMode, Texture, Vertex, VertexIndices};
 
 use game::Key;
+use gpu::{Gpu, Vertex};
 use world::TICK_RATE;
 
 /// Longest stretch of real time a frame may simulate; the rest of a longer stall is skipped.
 const MAX_FRAME_TICKS: f64 = 10.0;
-/// Antialiasing: the scene is drawn at 2^SS_HALVINGS times the window resolution and halved with
-/// linear filtering until it fits, each halving averaging 2x2 pixels.
-const SS_HALVINGS: u32 = 2;
-const MAX_SS_SIZE: u32 = 8192;
 /// How often the FPS counter updates.
 const FPS_INTERVAL_NS: u64 = 500_000_000;
 
-/// Supersampling render targets, largest first, and the window size they were made for.
-struct Supersample<'a> {
-    targets: Vec<Texture<'a>>,
-    size: (u32, u32),
+/// The original's picture is 16:10; with black bars it keeps that shape.
+const ORIGINAL_ASPECT: f64 = 1.6;
+
+/// The frame's size and where it goes in a window of `w` x `h` pixels.
+fn frame_rect(w: u32, h: u32, black_bars: bool) -> ((u32, u32), (u32, u32)) {
+    if !black_bars {
+        return ((w, h), (0, 0));
+    }
+    let (fw, fh) = if w as f64 / h as f64 > ORIGINAL_ASPECT {
+        ((h as f64 * ORIGINAL_ASPECT).round() as u32, h)
+    } else {
+        (w, (w as f64 / ORIGINAL_ASPECT).round() as u32)
+    };
+    ((fw.max(1), fh.max(1)), ((w - fw) / 2, (h - fh) / 2))
 }
 
 fn main() {
@@ -47,10 +54,10 @@ fn main() {
 }
 
 #[cfg(debug_assertions)]
-const USAGE: &str = "usage: duperhex [PACK.zip | --pack ID] [--level ID] [--speed X] [--fps]
+const USAGE: &str = "usage: duperhex [PACK.zip | --pack ID] [--level ID] [--speed X]
        duperhex --install PACK.zip";
 #[cfg(not(debug_assertions))]
-const USAGE: &str = "usage: duperhex [PACK.zip | --pack ID] [--speed X] [--fps]
+const USAGE: &str = "usage: duperhex [PACK.zip | --pack ID] [--speed X]
        duperhex --install PACK.zip";
 
 fn help() -> String {
@@ -66,7 +73,6 @@ Options:
                 with the same id, then exit
   --pack ID     run the installed pack with this id
   --speed X     game speed multiplier, from {} to {} (default 1)
-  --fps         show a frame rate counter
   -h, --help    print this help and exit",
         audio::MIN_SPEED,
         audio::MAX_SPEED
@@ -94,13 +100,12 @@ enum PackChoice {
 }
 
 /// The command line: a pack to install, or else the pack to run, a level to start in (debug
-/// builds only), how fast the game runs, and whether to show the frame rate.
+/// builds only), and how fast the game runs.
 struct Args {
     install: Option<PathBuf>,
     pack: PackChoice,
     level: Option<String>,
     speed: f64,
-    show_fps: bool,
 }
 
 fn args() -> Result<Args, String> {
@@ -109,7 +114,6 @@ fn args() -> Result<Args, String> {
     let mut install = None;
     let mut level = None;
     let mut speed = 1.0;
-    let mut show_fps = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         if a == "-h" || a == "--help" {
@@ -127,8 +131,6 @@ fn args() -> Result<Args, String> {
             if !(audio::MIN_SPEED..=audio::MAX_SPEED).contains(&speed) {
                 return Err(format!("--speed: must be from {} to {}", audio::MIN_SPEED, audio::MAX_SPEED));
             }
-        } else if a == "--fps" {
-            show_fps = true;
         } else if a.starts_with('-') || path.is_some() {
             return Err(USAGE.into());
         } else {
@@ -140,7 +142,7 @@ fn args() -> Result<Args, String> {
         (Some(path), None) => PackChoice::Path(path),
         (None, id) => PackChoice::Installed(id),
     };
-    Ok(Args { install, pack, level, speed, show_fps })
+    Ok(Args { install, pack, level, speed })
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -167,17 +169,19 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
-    let window = video.window("duperhex", 768, 480).resizable().high_pixel_density().build()?;
-    let mut canvas = window.into_canvas();
+    let mut window = video.window("duperhex", 768, 480).resizable().high_pixel_density().build()?;
     let audio = audio::Audio::new(&sdl, pack, files, args.speed)?;
     let mut events = sdl.event_pump()?;
     let mouse = sdl.mouse();
-    let creator = canvas.texture_creator();
-    let mut atlas = text::Atlas::new(&creator)?;
-    let mut ss = Supersample { targets: Vec::new(), size: (0, 0) };
+    let mut atlas = text::Atlas::new();
 
     let save = save::Save::load(&pack.id);
-    let mut g = game::Game::new(pack, audio, save, rand::random());
+    // SAFETY: the window is declared first, so it's dropped after the Gpu.
+    let mut gpu = unsafe { Gpu::new(&window, save.settings.vsync)? };
+    if dbg.wants_shots() && !gpu.can_capture() {
+        return Err("screenshots: the window's surface can't be read back".into());
+    }
+    let mut g = game::Game::new(pack, audio, save, gpu.sample_counts().to_vec(), rand::random());
     g.set_god(dbg.god);
     if let Some(li) = start {
         g.start_run(li);
@@ -199,9 +203,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     'run: loop {
         if g.take_display_changed() {
             let s = &g.save().settings;
-            canvas.window_mut().set_fullscreen(s.fullscreen).ok();
+            window.set_fullscreen(s.fullscreen).ok();
             mouse.show_cursor(!s.fullscreen);
-            platform::set_vsync(&mut canvas, s.vsync);
+            gpu.set_vsync(s.vsync);
         }
         let now = platform::ticks_ns();
         if to_sim(now, base) - g.world().t() > MAX_FRAME_TICKS * speed {
@@ -241,26 +245,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         dbg.trace(&g);
 
-        let (w, h) = canvas.output_size()?;
-        if ss.size != (w, h) {
-            let mut halvings = SS_HALVINGS;
-            while halvings > 0 && w.max(h) << halvings > MAX_SS_SIZE {
-                halvings -= 1;
-            }
-            let mut targets = Vec::new();
-            for k in (1..=halvings).rev() {
-                let mut t = creator.create_texture_target(PixelFormat::RGBA32, w << k, h << k)?;
-                t.set_scale_mode(ScaleMode::Linear);
-                targets.push(t);
-            }
-            ss = Supersample { targets, size: (w, h) };
-        }
-        let (sw, sh) = (w << ss.targets.len(), h << ss.targets.len());
-        scene.build(g.world(), sw as f64, sh as f64);
-        // the interface, at sh / GUI_H pixels per unit
-        let k = sh as f64 / ui::GUI_H;
-        gui.build(&g, sw as f64 / k, render::palette(g.world()));
-        if args.show_fps {
+        let (w, h) = window.size_in_pixels();
+        gpu.resize((w, h));
+        let settings = &g.save().settings;
+        let ((fw, fh), at) = frame_rect(w, h, settings.black_bars);
+        scene.build(g.world(), fw as f64, fh as f64);
+        // the interface, at fh / GUI_H pixels per unit
+        let k = fh as f64 / ui::GUI_H;
+        gui.build(&g, fw as f64 / k, render::palette(g.world()));
+        if settings.show_fps {
             fps_frames += 1;
             let dt = now.saturating_sub(fps_start);
             if dt >= FPS_INTERVAL_NS {
@@ -271,37 +264,31 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         gui_verts.clear();
         gui_verts.extend(gui.tris.iter().flat_map(|t| {
-            let color = render::fcolor(t.color);
-            t.pts.map(|(x, y)| Vertex { position: FPoint::new((x * k) as f32, (y * k) as f32), color, tex_coord: FPoint::new(0.0, 0.0) })
+            let color = colour::Linear::from_srgb(t.color, 1.0);
+            t.pts.map(|(x, y)| Vertex { pos: [(x * k) as f32, (y * k) as f32], uv: [0.0; 2], color })
         }));
-        // text goes on top at the window's resolution: its glyphs are already antialiased, and
-        // supersampled ones would be too big for the atlas
         text_verts.clear();
-        atlas.build(&font, &gui.arena, &gui.texts, h as f64 / ui::GUI_H, &mut text_verts);
-        let draw = |c: &mut sdl3::render::WindowCanvas| {
-            c.set_draw_color(scene.clear);
-            c.clear();
-            // drawing errors only lose a frame
-            c.render_geometry(&scene.verts, None, VertexIndices::Sequential).ok();
-            c.render_geometry(&gui_verts, None, VertexIndices::Sequential).ok();
+        atlas.build(&font, &gui.arena, &gui.texts, k, &mut text_verts);
+        let t = g.world().t();
+        let frame = gpu::Frame {
+            clear: scene.clear,
+            scene: &scene.verts,
+            player: &scene.player,
+            gui: &gui_verts,
+            text: &text_verts,
+            glyphs: &mut atlas.uploads,
+            size: (fw, fh),
+            at,
+            samples: settings.antialiasing,
+            aberration: if settings.aberration { render::aberration(g.world()) } else { 0.0 },
+            bloom: if settings.bloom { render::bloom(g.world()) } else { 0.0 },
+            backdrop: scene.backdrop,
         };
-        if ss.targets.is_empty() {
-            draw(&mut canvas);
-        } else {
-            canvas.with_texture_canvas(&mut ss.targets[0], draw)?;
-            for i in 1..ss.targets.len() {
-                let (big, small) = ss.targets.split_at_mut(i);
-                canvas.with_texture_canvas(&mut small[0], |c| {
-                    c.copy(&big[i - 1], None, None).ok();
-                })?;
-            }
-            canvas.copy(ss.targets.last().unwrap(), None, FRect::new(0.0, 0.0, w as f32, h as f32))?;
-        }
-        canvas.render_geometry(&text_verts, Some(&atlas.tex), VertexIndices::Sequential).ok();
-        if dbg.shoot(&canvas, g.world().t()) {
+        if let Some(image) = gpu.render(frame, dbg.shot_due(t))
+            && dbg.save_shot(&image, t)
+        {
             break 'run;
         }
-        canvas.present();
     }
     Ok(())
 }

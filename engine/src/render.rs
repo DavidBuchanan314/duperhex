@@ -1,10 +1,8 @@
 //! The playfield: the original's 3D scene and camera, as real 3D with near-plane clipping, drawn
 //! into buffers kept from frame to frame.
 
-use sdl3::pixels::FColor;
-use sdl3::render::{FPoint, Vertex};
-
-use crate::pack::Rgb;
+use crate::colour::Linear;
+use crate::gpu::Vertex;
 use crate::world::{self, Colours, PAL_FULL, SLOTS, Scene, Wall, WallKind, World, slot};
 
 /// The original's desktop view: 768x480, seen through a 60 degree horizontal and 37.5 degree
@@ -62,8 +60,8 @@ impl Camera {
         [x, y, z + self.depth]
     }
 
-    fn project(&self, v: V3) -> FPoint {
-        FPoint::new((self.cx + v[0] * self.px / v[2]) as f32, (self.cy + v[1] * self.py / v[2]) as f32)
+    fn project(&self, v: V3) -> [f32; 2] {
+        [(self.cx + v[0] * self.px / v[2]) as f32, (self.cy + v[1] * self.py / v[2]) as f32]
     }
 }
 
@@ -91,8 +89,27 @@ fn polar(deg: f64, r: f64) -> (f64, f64) {
     (s * r, c * r)
 }
 
-pub fn fcolor(c: Rgb) -> FColor {
-    FColor::RGBA((c[0] / 255.0) as f32, (c[1] / 255.0) as f32, (c[2] / 255.0) as f32, 1.0)
+/// The effects follow the centre's pulse to the beat, rising from nothing to full between these
+/// two pulse values.
+const BEAT_PULSE: (f64, f64) = (4.0, 20.0);
+/// At full, chromatic aberration pulls red this fraction of the way in towards the centre of the
+/// screen.
+const MAX_ABERRATION: f64 = 0.03;
+/// Bloom is added at this strength, and this much more at full.
+const BLOOM: (f64, f64) = (0.25, 0.3);
+
+/// How strong the beat is now, 0 to 1.
+fn beat(w: &World) -> f64 {
+    let (from, full) = BEAT_PULSE;
+    ((w.view().pulse - from) / (full - from)).clamp(0.0, 1.0)
+}
+
+pub fn aberration(w: &World) -> f32 {
+    (beat(w) * MAX_ABERRATION) as f32
+}
+
+pub fn bloom(w: &World) -> f32 {
+    (BLOOM.0 + beat(w) * BLOOM.1) as f32
 }
 
 /// The colours on screen.
@@ -107,26 +124,43 @@ pub fn palette(w: &World) -> Colours {
     }
 }
 
-/// The playfield's triangles, in buffers reused from frame to frame.
+/// The playfield's triangles, in buffers reused from frame to frame. Vertex alpha is the glow
+/// weight: 0 for the background, 1 for everything else.
 pub struct Scene3d {
-    pub clear: FColor,
+    pub clear: Linear,
+    /// The lightness of the lighter background colour, which glowing parts must be lighter than.
+    pub backdrop: f32,
     pub verts: Vec<Vertex>,
+    /// The player, kept apart so the effects leave it clear.
+    pub player: Vec<Vertex>,
     laid: Vec<(usize, Wall)>,
     scratch: Vec<f64>,
 }
 
 impl Default for Scene3d {
     fn default() -> Scene3d {
-        Scene3d { clear: FColor::RGBA(0.0, 0.0, 0.0, 1.0), verts: Vec::new(), laid: Vec::new(), scratch: Vec::new() }
+        Scene3d {
+            clear: Linear::from_srgb([0.0; 3], 0.0),
+            backdrop: 0.0,
+            verts: Vec::new(),
+            player: Vec::new(),
+            laid: Vec::new(),
+            scratch: Vec::new(),
+        }
     }
 }
 
 impl Scene3d {
     pub fn build(&mut self, w: &World, width: f64, height: f64) {
         let pal = palette(w);
-        let col = |slot: usize| fcolor(pal[slot]);
+        let col = |slot: usize| {
+            let glow = !matches!(slot, slot::BACKGROUND | slot::WEDGE | slot::ODD_WEDGE);
+            Linear::from_srgb(pal[slot], glow as u8 as f32)
+        };
         self.clear = col(slot::BACKGROUND);
+        self.backdrop = col(slot::BACKGROUND).lightness().max(col(slot::WEDGE).lightness());
         self.verts.clear();
+        self.player.clear();
         let v = w.view();
         let (shape, player) = (w.shape(), w.player());
 
@@ -147,16 +181,16 @@ impl Scene3d {
             py: VIEW_H / 2.0 / HALF_FOV_Y.to_radians().tan() * scale,
         };
 
-        let verts = &mut self.verts;
-        let mut tri = |a: V3, b: V3, c: V3, slot: usize| {
+        let tri = |out: &mut Vec<Vertex>, a: V3, b: V3, c: V3, slot: usize| {
             let color = col(slot);
             let (poly, n) = clip([a, b, c]);
             for i in 1..n.saturating_sub(1) {
                 for p in [poly[0], poly[i], poly[i + 1]] {
-                    verts.push(Vertex { position: cam.project(p), color, tex_coord: FPoint::new(0.0, 0.0) });
+                    out.push(Vertex { pos: cam.project(p), uv: [0.0; 2], color });
                 }
             }
         };
+        let verts = &mut self.verts;
         let pt = |deg: f64, r: f64, z: f64| {
             let (x, y) = polar(deg, r);
             cam.view(x, y, z)
@@ -179,8 +213,8 @@ impl Scene3d {
             border[i] = pt(corner(i), r - CENTRE_BORDER, 0.0);
         }
         let mut wedge = |a: usize, b: usize, slot: usize| {
-            tri(inner[a], inner[b], far[a], slot);
-            tri(inner[b], far[b], far[a], slot);
+            tri(verts, inner[a], inner[b], far[a], slot);
+            tri(verts, inner[b], far[b], far[a], slot);
         };
         match n {
             4 => {
@@ -202,8 +236,8 @@ impl Scene3d {
         if (4..=6).contains(&n) {
             for i in 0..n {
                 let j = (i + 1) % n;
-                tri(inner[i], inner[j], border[i], slot::CENTRE);
-                tri(inner[j], border[j], border[i], slot::CENTRE);
+                tri(verts, inner[i], inner[j], border[i], slot::CENTRE);
+                tri(verts, inner[j], border[j], border[i], slot::CENTRE);
             }
         }
 
@@ -229,8 +263,8 @@ impl Scene3d {
             };
             let colour = if wl.side == pside && !ending { slot::NEAR_WALLS } else { slot::WALLS } + (i & 1);
             let (p0, p1, p2, p3) = (pt(a0, r0, 0.0), pt(a1, r0, 0.0), pt(a1, r1, 0.0), pt(a0, r1, 0.0));
-            tri(p0, p1, p3, colour);
-            tri(p1, p2, p3, colour);
+            tri(verts, p0, p1, p3, colour);
+            tri(verts, p1, p2, p3, colour);
         }
         if ending {
             return;
@@ -251,14 +285,14 @@ impl Scene3d {
             let inn = [0, 1, 2].map(|k| corner(k, gt % 15.0 + 2.0, 0.0));
             for k in 0..3 {
                 let j = (k + 1) % 3;
-                tri(out[k], out[j], inn[k], slot::HIGHLIGHT);
-                tri(out[j], inn[j], inn[k], slot::HIGHLIGHT);
+                tri(&mut self.player, out[k], out[j], inn[k], slot::HIGHLIGHT);
+                tri(&mut self.player, out[j], inn[j], inn[k], slot::HIGHLIGHT);
             }
         }
         let body = |z| [0, 1, 2].map(|k| corner(k, PLAYER_SIZE, z));
         let [a, b, c] = body(0.0);
-        tri(a, b, c, w.player_slot());
+        tri(&mut self.player, a, b, c, w.player_slot());
         let [a, b, c] = body(PLAYER_SHADOW);
-        tri(a, b, c, slot::HIGHLIGHT);
+        tri(&mut self.player, a, b, c, slot::HIGHLIGHT);
     }
 }

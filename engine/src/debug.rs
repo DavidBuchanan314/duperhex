@@ -10,10 +10,8 @@
 
 use std::env;
 
-use sdl3::pixels::PixelFormat;
-use sdl3::render::WindowCanvas;
-
 use crate::game::{Game, Held, Key};
+use crate::gpu::Image;
 
 pub struct Debug {
     pub trace: bool,
@@ -93,21 +91,23 @@ impl Debug {
         }
     }
 
-    /// Takes any screenshot due by time `t`; returns true once the last has been taken.
-    pub fn shoot(&mut self, canvas: &WindowCanvas, t: f64) -> bool {
+    /// Whether any screenshots were asked for.
+    pub fn wants_shots(&self) -> bool {
+        !self.shots.is_empty()
+    }
+
+    /// Whether a screenshot is due by time `t`.
+    pub fn shot_due(&self, t: f64) -> bool {
+        self.shots.last().is_some_and(|&s| t >= s)
+    }
+
+    /// Saves the screenshot due by time `t`; returns true once the last has been taken.
+    pub fn save_shot(&mut self, image: &Image, t: f64) -> bool {
         let Some(s) = self.shots.pop_if(|&mut s| t >= s) else { return false };
-        let surf = canvas.read_pixels(None).unwrap().convert_format(PixelFormat::RGBA32).unwrap();
-        let (w, h, pitch) = (surf.width(), surf.height(), surf.pitch() as usize);
-        let mut rows = Vec::with_capacity(w as usize * h as usize * 4);
-        surf.with_lock(|px| {
-            for r in px.chunks(pitch) {
-                rows.extend_from_slice(&r[..w as usize * 4]);
-            }
-        });
         let f = std::fs::File::create(format!("{}/{s:06.0}.png", self.shot_dir)).unwrap();
-        let mut enc = png::Encoder::new(f, w, h);
+        let mut enc = png::Encoder::new(f, image.width, image.height);
         enc.set_color(png::ColorType::Rgba);
-        enc.write_header().unwrap().write_image_data(&rows).unwrap();
+        enc.write_header().unwrap().write_image_data(&image.rgba).unwrap();
         self.shots.is_empty()
     }
 }

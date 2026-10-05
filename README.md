@@ -1,16 +1,22 @@
 # DuperHex
 
-A Super Hexagon game engine reimplementation in Rust + SDL3, plus scripts to extract assets from the latest Steam-on-Linux release of the game.
+A Super Hexagon game engine reimplementation in Rust + SDL3 + wgpu, plus scripts to extract assets from the latest Steam-on-Linux release of the game.
 
 Asset extraction is nontrivial, since much of the game's "data" is encoded as if/else statements in code. `angr` and `unicorn` are used to recover and convert the relevant logic into a JSON-based representation.
 
 Features:
 
 - No FPS locking, with continuous-time physics and animation.
-- Support for ultrawide aspect ratios without black bars.
 - F11 to toggle fullscreen mode.
-- Optional FPS counter (`--fps`).
+- A new "extras" menu with the following new options:
+	- Support for ultrawide aspect ratios without black bars.
+	- FPS display.
+	- Antialiasing options.
+	- Chromatic aberration shader.
+	- Bloom shader.
 - Optional `--speed` multiplier to speed up or slow down the game.
+
+The custom shaders are a little tacky, they're off by default and mainly exist as a demonstration of what's possible.
 
 TODO:
 

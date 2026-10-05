@@ -4,7 +4,7 @@
 
 use std::fmt::{self, Write};
 
-use crate::game::{GAME_OVER_ZOOM, Game, Held, Menu, OPTIONS, Unlock};
+use crate::game::{EXTRAS, GAME_OVER_ZOOM, Game, Held, Menu, OPTIONS, Unlock};
 use crate::pack::{Announce, Colour, MenuColour, Rgb};
 use crate::save::MAX_VOLUME;
 use crate::text::{Font, Size, TextItem};
@@ -308,6 +308,7 @@ impl<'f> Gui<'f> {
                 match g.menu {
                     Menu::Main => self.title(g),
                     Menu::Options => self.options(g),
+                    Menu::Extras => self.extras(g),
                     Menu::Credits => self.credits(g),
                     Menu::Delete => self.delete(g),
                 }
@@ -451,7 +452,7 @@ impl<'f> Gui<'f> {
         if let Some(l) = t.get(1) {
             self.text(Centred(-10.0), 210.0, format_args!("   {l}"), WHITE, Size::Heading);
         }
-        let item = ["START GAME", "OPTIONS", "CREDITS"][g.cursor.min(2)];
+        let item = ["START GAME", "OPTIONS", "EXTRAS", "CREDITS"][g.cursor.min(3)];
         self.print(Centred(0.0), 355.0, item, grey(225.0 - g.world().view().glow));
         self.print(Centred(0.0), GUI_H - 30.0, PROMPT_SELECT, WHITE);
         let w = self.w;
@@ -478,6 +479,33 @@ impl<'f> Gui<'f> {
                 3 => self.print(Centred(0.0), y, format_args!("SOUND VOLUME: {} / {MAX_VOLUME}", s.sound_volume), WHITE),
                 _ => self.print(Centred(0.0), y, "DELETE RECORDS", WHITE),
             }
+        }
+    }
+
+    fn extras(&mut self, g: &Game) {
+        let w = self.w;
+        let cx = self.cx();
+        let s = &g.save().settings;
+        let on = |b| if b { "ON" } else { "OFF" };
+        let lines: [String; EXTRAS] = [
+            format!("BLACK BARS: {}", on(s.black_bars)),
+            format!("CHROMATIC ABERRATION: {}", on(s.aberration)),
+            format!("BLOOM: {}", on(s.bloom)),
+            match s.antialiasing {
+                1 => "ANTIALIASING: OFF".into(),
+                n => format!("ANTIALIASING: {n}X MSAA"),
+            },
+            format!("SHOW FPS: {}", on(s.show_fps)),
+        ];
+        self.corner_button(PROMPT_BACK, 0.0);
+        let temp = lines.iter().map(|l| self.width(l, Size::Normal)).fold(0.0, f64::max) / 2.0 + 20.0;
+        let y = 177.0 + g.cursor as f64 * 40.0;
+        self.button(cx - temp, y, cx + temp, y + 30.0, 0.0);
+
+        self.print(Right(w - 10.0), 1.0, PROMPT_BACK, WHITE);
+        self.text(Centred(0.0), 90.0, "EXTRAS", WHITE, Size::Heading);
+        for (i, line) in lines.iter().enumerate() {
+            self.print(Centred(0.0), 180.0 + 40.0 * i as f64, line, WHITE);
         }
     }
 

@@ -4,13 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
 fontdue = "0.9.4"
 lewton = "0.10.2"
 png = "0.18.1"
+pollster = "1.0.1"
 rand = "0.10.3"
-sdl3 = "0.20.0"
+sdl3 = { version = "0.20.0", features = ["raw-window-handle"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+wgpu = "30.0.1"
 zip = "8.6.0"
 
 [profile.dev.package."*"]

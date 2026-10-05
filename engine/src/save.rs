@@ -17,13 +17,33 @@ pub struct Settings {
     /// 0..=MAX_VOLUME
     pub music_volume: u32,
     pub sound_volume: u32,
+    /// Keep the original's 16:10 picture, with black bars around it.
+    pub black_bars: bool,
+    /// Split the colours with the beat.
+    pub aberration: bool,
+    /// Make bright colours glow.
+    pub bloom: bool,
+    /// Multisampling's samples per pixel: 1 for no antialiasing.
+    pub antialiasing: u32,
+    pub show_fps: bool,
     /// The installed pack to run when none is named.
     pub last_pack: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { fullscreen: false, vsync: true, music_volume: MAX_VOLUME, sound_volume: MAX_VOLUME, last_pack: None }
+        Settings {
+            fullscreen: false,
+            vsync: true,
+            music_volume: MAX_VOLUME,
+            sound_volume: MAX_VOLUME,
+            black_bars: false,
+            aberration: false,
+            bloom: false,
+            antialiasing: 4,
+            show_fps: false,
+            last_pack: None,
+        }
     }
 }
 

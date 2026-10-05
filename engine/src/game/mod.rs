@@ -12,7 +12,8 @@ use crate::save::{MAX_VOLUME, Save};
 use crate::world::{self, Event, RunSetup, Scene, Turn, World};
 
 pub const OPTIONS: usize = 5;
-const MAIN_MENU_ITEMS: usize = 3;
+pub const EXTRAS: usize = 5;
+const MAIN_MENU_ITEMS: usize = 4;
 /// Ticks before the title's voice.
 const TITLE_VOICE: u32 = 45;
 /// Ticks a held menu direction waits before moving again.
@@ -36,6 +37,7 @@ const ENDING_FLASH: f64 = 2.0 * world::FLASH;
 pub enum Menu {
     Main,
     Options,
+    Extras,
     Credits,
     Delete,
 }
@@ -98,6 +100,8 @@ pub struct Game {
     pub quit: bool,
     /// A display setting changed (fullscreen or vsync), and the window should follow.
     display_changed: bool,
+    /// The antialiasing sample counts the GPU supports, ascending from 1.
+    sample_counts: Vec<u32>,
 
     pub menu: Menu,
     pub cursor: usize,
@@ -119,7 +123,7 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(pack: &'static Pack, mut audio: Audio, save: Save, seed: u64) -> Game {
+    pub fn new(pack: &'static Pack, mut audio: Audio, save: Save, sample_counts: Vec<u32>, seed: u64) -> Game {
         audio.set_volumes(save.settings.music_volume, save.settings.sound_volume);
         Game {
             pack,
@@ -128,6 +132,7 @@ impl Game {
             save,
             quit: false,
             display_changed: true,
+            sample_counts,
             menu: Menu::Main,
             cursor: 0,
             page: 0,
@@ -454,6 +459,7 @@ impl Game {
                     match self.cursor {
                         0 => self.go_stage_select(0),
                         1 => self.open(Menu::Options, 0),
+                        2 => self.open(Menu::Extras, 0),
                         _ => self.open(Menu::Credits, 0),
                     }
                 }
@@ -488,6 +494,31 @@ impl Game {
                     self.open(Menu::Main, 1);
                 }
             }
+            Menu::Extras => {
+                let d = self.menu_step(k, true);
+                self.cursor = (self.cursor as i32 + d).rem_euclid(EXTRAS as i32) as usize;
+                if k.select {
+                    self.sounds(&pack.roles.menu_select);
+                    self.inputlock = true;
+                    let s = &mut self.save.settings;
+                    match self.cursor {
+                        0 => s.black_bars = !s.black_bars,
+                        1 => s.aberration = !s.aberration,
+                        2 => s.bloom = !s.bloom,
+                        3 => {
+                            // the next supported sample count, wrapping round to the first
+                            let counts = &self.sample_counts;
+                            s.antialiasing = counts.iter().copied().find(|&n| n > s.antialiasing).unwrap_or(counts[0]);
+                        }
+                        _ => s.show_fps = !s.show_fps,
+                    }
+                    self.save.write();
+                }
+                if k.quit {
+                    self.sounds(&pack.roles.rank_up);
+                    self.open(Menu::Main, 2);
+                }
+            }
             Menu::Credits => {
                 let d = self.menu_step(k, false);
                 let n = self.credits_pages();
@@ -497,7 +528,7 @@ impl Game {
                 }
                 if k.quit {
                     self.sounds(&pack.roles.rank_up);
-                    self.open(Menu::Main, 2);
+                    self.open(Menu::Main, 3);
                 }
                 if k.clear {
                     self.sounds(&pack.roles.menu_select);
