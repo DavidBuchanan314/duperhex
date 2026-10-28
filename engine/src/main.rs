@@ -211,6 +211,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut clock = Clock { base: platform::ticks_ns(), sim0: g.world().t(), speed: g.speed() };
     // frame rate: frames counted since fps_start, shown as of the last update
     let (mut fps, mut fps_frames, mut fps_start) = (0.0, 0u32, clock.base);
+    // when the last frame was drawn, for the fluid's time step
+    let mut last_frame = clock.base;
 
     'run: loop {
         if g.take_display_changed() {
@@ -283,7 +285,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
         let settings = &g.save().settings;
         let ((fw, fh), at) = frame_rect(w, h, settings.black_bars);
-        scene.build(g.world(), fw as f64, fh as f64);
+        scene.build(g.world(), fw as f64, fh as f64, settings.extrude);
         // the interface, at fh / GUI_H pixels per unit
         let k = fh as f64 / ui::GUI_H;
         gui.build(&g, fw as f64 / k, render::palette(g.world()));
@@ -307,6 +309,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         let frame = gpu::Frame {
             clear: scene.clear,
             scene: &scene.verts,
+            mirror: &scene.mirror,
+            shadow: &scene.shadow,
+            solid: &scene.solid,
             player: &scene.player,
             gui: &gui_verts,
             text: &text_verts,
@@ -317,7 +322,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             aberration: if settings.aberration { render::aberration(g.world()) } else { 0.0 },
             bloom: if settings.bloom { render::bloom(g.world()) } else { 0.0 },
             backdrop: scene.backdrop,
+            fluid: settings.fluid,
+            beat: render::beat(g.world()) as f32,
+            dt: now.saturating_sub(last_frame) as f32 * 1e-9,
         };
+        last_frame = now;
         if let Some(image) = gpu.render(surface, frame, dbg.shot_due(t))
             && dbg.save_shot(&image, t)
         {

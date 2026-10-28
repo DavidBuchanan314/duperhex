@@ -1,5 +1,6 @@
 //! Drawing with wgpu. The playfield goes into the scene texture, whose glowing parts are blurred
-//! into the bloom. The scene and bloom are composed into the frame with their effects, the player
+//! into the bloom. With 3D walls, the scene's walls stand up out of it, depth tested, over their
+//! reflections and shadows in the floor. The scene and bloom are composed into the frame with their effects, the player
 //! and the interface's shapes and text go on top, and the frame goes to the window, inside the
 //! black bars if there are any. The scene and the frame are multisampled when antialiasing.
 //!
@@ -28,8 +29,26 @@ pub struct Vertex {
 
 const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const BLOOM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const FLUID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 /// The most bloom levels, each half the size of the last, from half the frame's size down.
 const BLOOM_LEVELS: usize = 6;
+
+/// The fluid is simulated this many texels high, whatever the frame's size (so it behaves the
+/// same at any size), its pressure solved with this many Jacobi iterations (even, so it ends where
+/// it started), and its smoke kept finer, this many texels high.
+const FLUID_H: u32 = 240;
+const FLUID_ITERATIONS: usize = 40;
+/// The fluid steps this many seconds at a time, as many steps as a frame needs up to the most, so
+/// that it behaves the same at any frame rate.
+const FLUID_STEP: f32 = 1.0 / 240.0;
+const FLUID_MAX_STEPS: u32 = 6;
+const SMOKE_H: u32 = 480;
+
+/// The fluid's or its smoke's size, `h` high, for a frame of `size`: as wide as the frame's aspect.
+fn fluid_size(size: (u32, u32), h: u32) -> (u32, u32) {
+    (((size.0 as u64 * h as u64 + size.1 as u64 / 2) / size.1.max(1) as u64).max(1) as u32, h)
+}
 
 /// Shader code prepended to the shaders that use it.
 const FULLSCREEN: &str = include_str!("fullscreen.wgsl");
@@ -40,6 +59,12 @@ pub struct Frame<'a> {
     pub clear: Linear,
     /// The playfield.
     pub scene: &'a [Vertex],
+    /// With 3D walls, after the playfield's floor: the walls' reflections, added to it; their
+    /// shadows, multiplying it by their colour, each pixel at most once; and the walls themselves,
+    /// depth tested. Their vertices' uv.x is their depth.
+    pub mirror: &'a [Vertex],
+    pub shadow: &'a [Vertex],
+    pub solid: &'a [Vertex],
     pub player: &'a [Vertex],
     /// The interface's shapes.
     pub gui: &'a [Vertex],
@@ -55,6 +80,12 @@ pub struct Frame<'a> {
     pub bloom: f32,
     /// The lightness of the lighter background colour, which glowing parts must be lighter than.
     pub backdrop: f32,
+    /// Run the fluid, stirred by the scene, and show it.
+    pub fluid: bool,
+    /// How strong the beat is now, 0 to 1.
+    pub beat: f32,
+    /// Seconds since the last frame.
+    pub dt: f32,
 }
 
 /// A screenshot: RGBA rows, top first.
@@ -76,18 +107,74 @@ struct Target {
     samples: u32,
     /// What the scene and the frame are drawn into when multisampling, resolving into them.
     msaa: Option<wgpu::TextureView>,
+    /// The scene's depth and stencil.
+    depth: wgpu::TextureView,
     scene: Level,
     /// Largest first.
     bloom: Vec<Level>,
     frame: Level,
-    /// The scene and the bloom, for composing.
+    /// The scene, the bloom, and the fluid's smoke and velocity, for composing.
     compose: wgpu::BindGroup,
+    fluid: FluidTarget,
+}
+
+/// The fluid's textures, at its size, and the bind groups for each of its passes. Each pass's
+/// result ends up back in the first of its pair, the second being scratch, except the mask, whose
+/// second is now and first is the last step's.
+struct FluidTarget {
+    mask: [wgpu::TextureView; 2],
+    velocity: [wgpu::TextureView; 2],
+    pressure: [wgpu::TextureView; 2],
+    /// Now, carried ahead, and corrected.
+    smoke: [wgpu::TextureView; 3],
+    /// The scene shrunk to the fluid's size.
+    down: wgpu::TextureView,
+    curl: wgpu::TextureView,
+    divergence: wgpu::TextureView,
+    groups: FluidGroups,
+}
+
+/// Each fluid pass's inputs: the scene, shrunk; that, into the mask; the velocity, into its curl; the velocity,
+/// masks and curl, into the next velocity; that, into its divergence; pressure and divergence,
+/// into the other pressure, and back; the velocity and pressure, into the velocity; the smoke and
+/// velocity, into the smoke carried ahead; the smoke, velocity, that, and masks, into the next
+/// smoke; and copies back of that and of the mask.
+struct FluidGroups {
+    down: wgpu::BindGroup,
+    mask: wgpu::BindGroup,
+    curl: wgpu::BindGroup,
+    velocity: wgpu::BindGroup,
+    divergence: wgpu::BindGroup,
+    jacobi: [wgpu::BindGroup; 2],
+    project: wgpu::BindGroup,
+    smoke_ahead: wgpu::BindGroup,
+    smoke: wgpu::BindGroup,
+    copy_smoke: wgpu::BindGroup,
+    copy_mask: wgpu::BindGroup,
+}
+
+struct FluidPipelines {
+    down: wgpu::RenderPipeline,
+    mask: wgpu::RenderPipeline,
+    curl: wgpu::RenderPipeline,
+    velocity: wgpu::RenderPipeline,
+    divergence: wgpu::RenderPipeline,
+    jacobi: wgpu::RenderPipeline,
+    project: wgpu::RenderPipeline,
+    smoke_ahead: wgpu::RenderPipeline,
+    smoke: wgpu::RenderPipeline,
+    copy: wgpu::RenderPipeline,
 }
 
 /// The pipelines that draw into multisampled targets, for one sample count.
 struct Multisampled {
     samples: u32,
     shapes: wgpu::RenderPipeline,
+    /// The scene's parts: see `Frame`.
+    floor: wgpu::RenderPipeline,
+    mirror: wgpu::RenderPipeline,
+    shadow: wgpu::RenderPipeline,
+    solid: wgpu::RenderPipeline,
     compose: wgpu::RenderPipeline,
 }
 
@@ -113,6 +200,11 @@ pub struct Gpu {
     bloom_down: wgpu::RenderPipeline,
     bloom_up: wgpu::RenderPipeline,
     copy: wgpu::RenderPipeline,
+    fluid_pipelines: FluidPipelines,
+    fluid_layout: wgpu::BindGroupLayout,
+    fluid: wgpu::Buffer,
+    /// The beat last frame, to kick the fluid as it rises.
+    last_beat: f32,
 
     /// A texture and sampler to draw from.
     source_layout: wgpu::BindGroupLayout,
@@ -170,13 +262,15 @@ fn vertex_pipeline(
     fragment: &str,
     samples: u32,
     blend: Option<wgpu::BlendState>,
+    depth: Option<wgpu::DepthStencilState>,
 ) -> wgpu::RenderPipeline {
+    let vertex = if depth.is_some() { "vs_depth" } else { "vs_main" };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(fragment),
         layout: Some(layout),
-        vertex: wgpu::VertexState { module, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[Some(vertex_layout())] },
+        vertex: wgpu::VertexState { module, entry_point: Some(vertex), compilation_options: Default::default(), buffers: &[Some(vertex_layout())] },
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
+        depth_stencil: depth,
         multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
         fragment: Some(wgpu::FragmentState {
             module,
@@ -187,6 +281,23 @@ fn vertex_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Depth and stencil for drawing into the scene: depth tested and written if `solid`, and the
+/// stencil counting each pixel's draws if `once`, which then only draws where it's 0.
+fn scene_depth(solid: bool, once: bool) -> wgpu::DepthStencilState {
+    let face = if once {
+        wgpu::StencilFaceState { compare: wgpu::CompareFunction::Equal, fail_op: wgpu::StencilOperation::Keep, depth_fail_op: wgpu::StencilOperation::Keep, pass_op: wgpu::StencilOperation::IncrementClamp }
+    } else {
+        wgpu::StencilFaceState::IGNORE
+    };
+    wgpu::DepthStencilState {
+        format: DEPTH_FORMAT,
+        depth_write_enabled: Some(solid),
+        depth_compare: Some(if solid { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always }),
+        stencil: wgpu::StencilState { front: face, back: face, read_mask: 0xff, write_mask: 0xff },
+        bias: Default::default(),
+    }
 }
 
 /// A pipeline drawing one triangle over its target, from a texture.
@@ -268,7 +379,8 @@ impl Gpu {
         let sample_counts = if specific.is_empty() {
             vec![1, 4]
         } else {
-            adapter.get_texture_format_features(FRAME_FORMAT).flags.supported_sample_counts()
+            let depth = adapter.get_texture_format_features(DEPTH_FORMAT).flags.supported_sample_counts();
+            adapter.get_texture_format_features(FRAME_FORMAT).flags.supported_sample_counts().into_iter().filter(|n| depth.contains(n)).collect()
         };
 
         let caps = surface.get_capabilities(&adapter);
@@ -301,7 +413,11 @@ impl Gpu {
         let screen_layout = group_layout("screen", &[uniform_entry(0, wgpu::ShaderStages::VERTEX)]);
         let source_layout = group_layout("source", &[texture_entry(0), sampler_entry(1)]);
         let effects_layout = group_layout("effects", &[uniform_entry(0, wgpu::ShaderStages::FRAGMENT)]);
-        let compose_textures_layout = group_layout("compose", &[texture_entry(0), sampler_entry(1), texture_entry(2)]);
+        let compose_textures_layout = group_layout("compose", &[texture_entry(0), sampler_entry(1), texture_entry(2), texture_entry(3), texture_entry(4)]);
+        let fluid_layout = group_layout(
+            "fluid",
+            &[texture_entry(0), texture_entry(1), texture_entry(2), texture_entry(3), texture_entry(4), sampler_entry(5), uniform_entry(6, wgpu::ShaderStages::FRAGMENT)],
+        );
         let layout = |label, groups: &[Option<&wgpu::BindGroupLayout>]| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: groups, immediate_size: 0 })
         };
@@ -310,6 +426,7 @@ impl Gpu {
         let source_pipeline_layout = layout("source", &[Some(&source_layout)]);
         let bright_layout = layout("bright", &[Some(&source_layout), Some(&effects_layout)]);
         let compose_layout = layout("compose", &[Some(&compose_textures_layout), Some(&effects_layout)]);
+        let fluid_pipeline_layout = layout("fluid", &[Some(&fluid_layout)]);
 
         let uniform = |label| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -355,7 +472,7 @@ impl Gpu {
         let bloom_module = module(&device, "bloom", &[FULLSCREEN, EFFECTS, include_str!("bloom.wgsl")]);
         let compose_module = module(&device, "compose", &[FULLSCREEN, EFFECTS, include_str!("compose.wgsl")]);
         let copy_module = module(&device, "copy", &[FULLSCREEN, include_str!("copy.wgsl")]);
-        let text = vertex_pipeline(&device, &text_layout, &draw_module, "fs_text", 1, Some(wgpu::BlendState::ALPHA_BLENDING));
+        let text = vertex_pipeline(&device, &text_layout, &draw_module, "fs_text", 1, Some(wgpu::BlendState::ALPHA_BLENDING), None);
         let add = wgpu::BlendState {
             color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
             alpha: wgpu::BlendComponent::REPLACE,
@@ -364,6 +481,25 @@ impl Gpu {
         let bloom_down = fullscreen_pipeline(&device, &source_pipeline_layout, &bloom_module, "fs_down", 1, BLOOM_FORMAT, None);
         let bloom_up = fullscreen_pipeline(&device, &source_pipeline_layout, &bloom_module, "fs_up", 1, BLOOM_FORMAT, Some(add));
         let copy = fullscreen_pipeline(&device, &source_pipeline_layout, &copy_module, "fs", 1, format, None);
+        let fluid_module = module(&device, "fluid", &[FULLSCREEN, include_str!("fluid.wgsl")]);
+        let fluid_pipeline = |fragment| fullscreen_pipeline(&device, &fluid_pipeline_layout, &fluid_module, fragment, 1, FLUID_FORMAT, None);
+        let fluid_pipelines = FluidPipelines {
+            down: fluid_pipeline("fs_down"),
+            mask: fluid_pipeline("fs_mask"),
+            curl: fluid_pipeline("fs_curl"),
+            velocity: fluid_pipeline("fs_velocity"),
+            divergence: fluid_pipeline("fs_divergence"),
+            jacobi: fluid_pipeline("fs_jacobi"),
+            project: fluid_pipeline("fs_project"),
+            smoke_ahead: fluid_pipeline("fs_smoke_ahead"),
+            smoke: fluid_pipeline("fs_smoke"),
+            copy: fluid_pipeline("fs_copy"),
+        };
+        let fluid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("fluid"),
+            contents: bytemuck::cast_slice(&[0f32; 8]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let vertices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("vertices"),
             size: 1 << 20,
@@ -388,6 +524,10 @@ impl Gpu {
             bloom_down,
             bloom_up,
             copy,
+            fluid_pipelines,
+            fluid_layout,
+            fluid,
+            last_beat: 0.0,
             source_layout,
             compose_textures_layout,
             linear,
@@ -433,9 +573,24 @@ impl Gpu {
 
     fn multisampled(&mut self, samples: u32) {
         if !self.multisampled.iter().any(|m| m.samples == samples) {
-            let shapes = vertex_pipeline(&self.device, &self.shapes_layout, &self.draw_module, "fs_flat", samples, None);
+            let flat = |blend, depth| vertex_pipeline(&self.device, &self.shapes_layout, &self.draw_module, "fs_flat", samples, blend, depth);
+            // reflections add to the colour, shadows multiply it; both leave the glow weight be
+            let keep_alpha = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+            let add = wgpu::BlendState {
+                color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+                alpha: keep_alpha,
+            };
+            let multiply = wgpu::BlendState {
+                color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Dst, dst_factor: wgpu::BlendFactor::Zero, operation: wgpu::BlendOperation::Add },
+                alpha: keep_alpha,
+            };
+            let shapes = flat(None, None);
+            let floor = flat(None, Some(scene_depth(false, false)));
+            let mirror = flat(Some(add), Some(scene_depth(false, false)));
+            let shadow = flat(Some(multiply), Some(scene_depth(false, true)));
+            let solid = flat(None, Some(scene_depth(true, false)));
             let compose = fullscreen_pipeline(&self.device, &self.compose_layout, &self.compose_module, "fs", samples, FRAME_FORMAT, None);
-            self.multisampled.push(Multisampled { samples, shapes, compose });
+            self.multisampled.push(Multisampled { samples, shapes, floor, mirror, shadow, solid, compose });
         }
     }
 
@@ -468,6 +623,7 @@ impl Gpu {
             Level { view, source }
         };
         let msaa = (samples > 1).then(|| texture(size, samples, FRAME_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default()));
+        let depth = texture(size, samples, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
         let scene = level(size, FRAME_FORMAT);
         let frame = level(size, FRAME_FORMAT);
         let mut bloom = Vec::new();
@@ -479,6 +635,7 @@ impl Gpu {
         if bloom.is_empty() {
             bloom.push(level((1, 1), BLOOM_FORMAT));
         }
+        let fluid = self.fluid_target(size, &scene.view);
         let compose = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compose"),
             layout: &self.compose_textures_layout,
@@ -486,9 +643,58 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&scene.view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.linear) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0].view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&fluid.smoke[0]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&fluid.velocity[0]) },
             ],
         });
-        self.target = Some(Target { size, samples, msaa, scene, bloom, frame, compose });
+        self.target = Some(Target { size, samples, msaa, depth, scene, bloom, frame, compose, fluid });
+    }
+
+    fn fluid_target(&self, size: (u32, u32), scene: &wgpu::TextureView) -> FluidTarget {
+        let (w, h) = fluid_size(size, FLUID_H);
+        let view = |(w, h)| {
+            self.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("fluid"),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: FLUID_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let pair = || [view((w, h)), view((w, h))];
+        let (mask, velocity, pressure) = (pair(), pair(), pair());
+        let fine = fluid_size(size, SMOKE_H);
+        let smoke = [view(fine), view(fine), view(fine)];
+        let (down, curl, divergence) = (view((w, h)), view((w, h)), view((w, h)));
+        // for the inputs a pass doesn't use
+        let none = view((1, 1));
+        let group = |inputs: &[&wgpu::TextureView]| {
+            let mut entries: Vec<wgpu::BindGroupEntry> = (0..5)
+                .map(|i| wgpu::BindGroupEntry { binding: i, resource: wgpu::BindingResource::TextureView(inputs.get(i as usize).copied().unwrap_or(&none)) })
+                .collect();
+            entries.push(wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.linear) });
+            entries.push(wgpu::BindGroupEntry { binding: 6, resource: self.fluid.as_entire_binding() });
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("fluid"), layout: &self.fluid_layout, entries: &entries })
+        };
+        let groups = FluidGroups {
+            down: group(&[scene]),
+            mask: group(&[&down]),
+            curl: group(&[&velocity[0]]),
+            velocity: group(&[&velocity[0], &mask[1], &mask[0], &curl]),
+            divergence: group(&[&velocity[1]]),
+            jacobi: [group(&[&pressure[0], &divergence]), group(&[&pressure[1], &divergence])],
+            project: group(&[&velocity[1], &pressure[0]]),
+            smoke_ahead: group(&[&smoke[0], &velocity[0]]),
+            smoke: group(&[&smoke[0], &velocity[0], &smoke[1], &mask[1], &mask[0]]),
+            copy_smoke: group(&[&smoke[2]]),
+            copy_mask: group(&[&mask[1]]),
+        };
+        FluidTarget { mask, velocity, pressure, smoke, down, curl, divergence, groups }
     }
 
     /// The window's next image to draw into, waiting for one to be free (with vsync, until a
@@ -515,8 +721,9 @@ impl Gpu {
                 wgpu::Extent3d { width: g.w, height: g.h, depth_or_array_layers: 1 },
             );
         }
-        // the scene, the player, the interface's shapes and its text, one after another
-        let bytes = size_of_val(f.scene) + size_of_val(f.player) + size_of_val(f.gui) + size_of_val(f.text);
+        // the scene's parts, the player, the interface's shapes and its text, one after another
+        let parts = [f.scene, f.mirror, f.shadow, f.solid, f.player, f.gui, f.text];
+        let bytes: usize = parts.iter().map(|p| size_of_val(*p)).sum();
         if bytes as u64 > self.vertices.size() {
             self.vertices = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("vertices"),
@@ -526,15 +733,15 @@ impl Gpu {
             });
         }
         let mut at = 0;
-        let mut ranges = [0..0, 0..0, 0..0, 0..0];
-        for (range, verts) in ranges.iter_mut().zip([f.scene, f.player, f.gui, f.text]) {
+        let mut ranges = [0, 1, 2, 3, 4, 5, 6].map(|_| 0..0);
+        for (range, verts) in ranges.iter_mut().zip(parts) {
             self.queue.write_buffer(&self.vertices, (at * size_of::<Vertex>()) as u64, bytemuck::cast_slice(verts));
             *range = at as u32..(at + verts.len()) as u32;
             at += verts.len();
         }
-        let [scene_range, player_range, gui_range, text_range] = ranges;
+        let [scene_range, mirror_range, shadow_range, solid_range, player_range, gui_range, text_range] = ranges;
         self.queue.write_buffer(&self.screen, 0, bytemuck::cast_slice(&[f.size.0 as f32, f.size.1 as f32, 0.0, 0.0]));
-        self.queue.write_buffer(&self.effects, 0, bytemuck::cast_slice(&[f.aberration, f.bloom, f.backdrop, 0.0]));
+        self.queue.write_buffer(&self.effects, 0, bytemuck::cast_slice(&[f.aberration, f.bloom, f.backdrop, f.fluid as u8 as f32]));
 
         let out = surface.texture.create_view(&Default::default());
 
@@ -548,12 +755,64 @@ impl Gpu {
         {
             let [r, g, b, a] = f.clear.rgba().map(f64::from);
             let (view, resolve) = attachment(t.msaa.as_ref(), &t.scene);
-            let mut pass = begin(&mut enc, view, resolve, wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }));
-            pass.set_pipeline(&ms.shapes);
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: resolve,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &t.depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Discard }),
+                }),
+                ..Default::default()
+            });
             pass.set_bind_group(0, &self.screen_group, &[]);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
-            pass.draw(scene_range, 0..1);
+            for (pipeline, range) in [(&ms.floor, scene_range), (&ms.mirror, mirror_range), (&ms.shadow, shadow_range), (&ms.solid, solid_range)] {
+                if !range.is_empty() {
+                    pass.set_pipeline(pipeline);
+                    pass.draw(range, 0..1);
+                }
+            }
         }
+        if f.fluid {
+            let (w, h) = fluid_size(f.size, FLUID_H);
+            // a long frame (a hitch) taken as a short one
+            let frame_dt = f.dt.clamp(1e-4, 1.0 / 20.0);
+            let steps = ((frame_dt / FLUID_STEP).ceil() as u32).clamp(1, FLUID_MAX_STEPS);
+            let dt = frame_dt / steps as f32;
+            // the beat's rise, shared between the steps
+            let kick = (f.beat - self.last_beat).max(0.0) / steps as f32;
+            self.queue.write_buffer(&self.fluid, 0, bytemuck::cast_slice(&[1.0 / w as f32, 1.0 / h as f32, dt, kick, frame_dt, 0.0, 0.0, 0.0]));
+            let (p, fl) = (&self.fluid_pipelines, &t.fluid);
+            let g = &fl.groups;
+            let mut run = |pipeline: &wgpu::RenderPipeline, group: &wgpu::BindGroup, into: &wgpu::TextureView| {
+                let mut pass = begin(&mut enc, into, None, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..3, 0..1);
+            };
+            run(&p.down, &g.down, &fl.down);
+            run(&p.mask, &g.mask, &fl.mask[1]);
+            for _ in 0..steps {
+                run(&p.curl, &g.curl, &fl.curl);
+                run(&p.velocity, &g.velocity, &fl.velocity[1]);
+                run(&p.divergence, &g.divergence, &fl.divergence);
+                for i in 0..FLUID_ITERATIONS {
+                    run(&p.jacobi, &g.jacobi[i % 2], &fl.pressure[(i + 1) % 2]);
+                }
+                run(&p.project, &g.project, &fl.velocity[0]);
+                run(&p.smoke_ahead, &g.smoke_ahead, &fl.smoke[1]);
+                run(&p.smoke, &g.smoke, &fl.smoke[2]);
+                run(&p.copy, &g.copy_smoke, &fl.smoke[0]);
+            }
+            run(&p.copy, &g.copy_mask, &fl.mask[0]);
+        }
+        self.last_beat = f.beat;
         if f.bloom > 0.0 {
             // the bright parts down the chain, then back up it, each level adding to the larger
             let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);

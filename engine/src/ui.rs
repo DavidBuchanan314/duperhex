@@ -498,6 +498,15 @@ impl<'f> Gui<'f> {
             format!("BLACK BARS: {}", on(s.black_bars)),
             format!("CHROMATIC ABERRATION: {}", on(s.aberration)),
             format!("BLOOM: {}", on(s.bloom)),
+            format!(
+                "SPECIAL FX: {}",
+                match (s.extrude, s.fluid) {
+                    (false, false) => "OFF",
+                    (true, false) => "3D WALLS",
+                    (false, true) => "FLUID",
+                    (true, true) => "3D WALLS + FLUID",
+                }
+            ),
             match s.antialiasing {
                 1 => "ANTIALIASING: OFF".into(),
                 n => format!("ANTIALIASING: {n}X MSAA"),

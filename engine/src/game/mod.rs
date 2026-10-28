@@ -12,7 +12,7 @@ use crate::save::{MAX_VOLUME, SPEEDS, Save, VSYNCS, Vsync};
 use crate::world::{self, Event, RunSetup, Scene, Turn, World};
 
 pub const OPTIONS: usize = 5;
-pub const EXTRAS: usize = 6;
+pub const EXTRAS: usize = 7;
 const MAIN_MENU_ITEMS: usize = 4;
 /// Ticks before the title's voice.
 const TITLE_VOICE: u32 = 45;
@@ -626,11 +626,16 @@ impl Game {
                         1 => s.aberration = !s.aberration,
                         2 => s.bloom = !s.bloom,
                         3 => {
+                            // off, 3D, fluid, both
+                            let n = (s.extrude as u8 | (s.fluid as u8) << 1) + 1;
+                            (s.extrude, s.fluid) = (n & 1 != 0, n & 2 != 0);
+                        }
+                        4 => {
                             // the next supported sample count, wrapping round to the first
                             let counts = &self.sample_counts;
                             s.antialiasing = counts.iter().copied().find(|&n| n > s.antialiasing).unwrap_or(counts[0]);
                         }
-                        4 => s.show_fps = !s.show_fps,
+                        5 => s.show_fps = !s.show_fps,
                         _ => {
                             // the next speed up, wrapping round to the slowest
                             if self.speed_override.is_none() {

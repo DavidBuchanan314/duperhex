@@ -12,12 +12,24 @@ struct VertexOut {
     @location(1) color: vec4<f32>,
 }
 
-@vertex
-fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOut {
+fn vertex(pos: vec2<f32>, uv: vec2<f32>, color: vec4<f32>) -> VertexOut {
     var out: VertexOut;
     out.pos = vec4<f32>(pos.x / screen.size.x * 2.0 - 1.0, 1.0 - pos.y / screen.size.y * 2.0, 0.0, 1.0);
     out.uv = uv;
     out.color = color;
+    return out;
+}
+
+@vertex
+fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOut {
+    return vertex(pos, uv, color);
+}
+
+// the playfield in 3D, with each vertex's depth (0 at the near plane, towards 1 far away) in uv.x
+@vertex
+fn vs_depth(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOut {
+    var out = vertex(pos, uv, color);
+    out.pos.z = uv.x;
     return out;
 }
 

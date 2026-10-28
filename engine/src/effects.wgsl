@@ -8,6 +8,8 @@ struct Effects {
     bloom: f32,
     // the lightness of the lighter background colour, which glowing parts must be lighter than
     backdrop: f32,
+    // how much of the fluid's smoke is added, and how far it bends the scene, or 0 for no fluid
+    fluid: f32,
 }
 
 @group(1) @binding(0) var<uniform> effects: Effects;

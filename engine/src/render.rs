@@ -26,6 +26,26 @@ const PLAYER_SHADOW: f64 = -6.0;
 /// In the ending, walls come out of the centre, starting this far out.
 const ENDING_SPAWN: f64 = 700.0;
 
+// 3D walls
+const WALL_H: f64 = 26.0;
+const CENTRE_H: f64 = 18.0;
+/// The camera tips back this many degrees more than the original's, swaying this much either way,
+/// and turns this much either way.
+const TILT: (f64, f64) = (28.0, 8.0);
+const TURN: f64 = 7.0;
+/// How fast the light circles, in radians per tick, and how high it is (the sine of its angle).
+const LIGHT_SPEED: f64 = 0.006;
+const LIGHT_UP: f64 = 0.55;
+/// The light on walls' sides: how much falls on them facing away from it, and how much reaches
+/// their feet.
+const SIDE_AMBIENT: f32 = 0.18;
+const FOOT: f32 = 0.3;
+/// How bright the floor's reflections are, and how far down they fade out.
+const MIRROR: f32 = 0.45;
+const MIRROR_FADE: f64 = 60.0;
+/// Shadows multiply the floor by this sRGB grey.
+const SHADE: f64 = 150.0;
+
 type V3 = [f64; 3];
 
 struct Camera {
@@ -65,23 +85,94 @@ impl Camera {
     }
 }
 
-/// Clips a triangle to z >= NEAR: a fan of up to 4 points.
-fn clip(t: [V3; 3]) -> ([V3; 4], usize) {
-    let mut out = [[0.0; 3]; 4];
+/// Clips a triangle, with a colour at each corner, to z >= NEAR: a fan of up to 4 points.
+fn clip(t: [(V3, Linear); 3]) -> ([(V3, Linear); 4], usize) {
+    let mut out = [t[0]; 4];
     let mut n = 0;
     for i in 0..3 {
-        let (a, b) = (t[i], t[(i + 1) % 3]);
+        let ((a, ca), (b, cb)) = (t[i], t[(i + 1) % 3]);
         if a[2] >= NEAR {
-            out[n] = a;
+            out[n] = t[i];
             n += 1;
         }
         if (a[2] >= NEAR) != (b[2] >= NEAR) {
             let k = (NEAR - a[2]) / (b[2] - a[2]);
-            out[n] = [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, NEAR];
+            out[n] = ([a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, NEAR], ca.lerp(cb, k as f32));
             n += 1;
         }
     }
     (out, n)
+}
+
+/// A triangle in view space, clipped, projected, and with its depth in uv.x.
+fn push(out: &mut Vec<Vertex>, cam: &Camera, t: [(V3, Linear); 3]) {
+    let (poly, n) = clip(t);
+    for i in 1..n.saturating_sub(1) {
+        for (p, color) in [poly[0], poly[i], poly[i + 1]] {
+            out.push(Vertex { pos: cam.project(p), uv: [(1.0 - NEAR / p[2]) as f32, 0.0], color });
+        }
+    }
+}
+
+fn quad(out: &mut Vec<Vertex>, cam: &Camera, q: [(V3, Linear); 4]) {
+    push(out, cam, [q[0], q[1], q[2]]);
+    push(out, cam, [q[0], q[2], q[3]]);
+}
+
+/// 3D walls' parts, as in gpu::Frame.
+struct Solids<'a> {
+    mirror: &'a mut Vec<Vertex>,
+    shadow: &'a mut Vec<Vertex>,
+    solid: &'a mut Vec<Vertex>,
+    cam: &'a Camera,
+    /// Towards the light, in playfield space with z up.
+    light: V3,
+    shade: Linear,
+}
+
+impl Solids<'_> {
+    /// A prism over the convex polygon `base` on the floor, from height `lo` up to `hi`, its top
+    /// `top` and its sides `colour`: lit, with its reflection and shadow.
+    fn prism(&mut self, base: &[(f64, f64)], lo: f64, hi: f64, top: Linear, colour: Linear) {
+        let cam = self.cam;
+        // up is towards the eye, -z
+        let at = |(x, y): (f64, f64), h: f64| cam.view(x, y, -h);
+        let [lx, ly, lz] = self.light;
+        let cast = |(x, y): (f64, f64), h: f64| cam.view(x - lx * h / lz, y - ly * h / lz, 0.0);
+        let fade = |h: f64| MIRROR * (1.0 - h / MIRROR_FADE).max(0.0) as f32;
+        let n = base.len();
+        let (cx, cy) = base.iter().fold((0.0, 0.0), |(sx, sy), &(x, y)| (sx + x / n as f64, sy + y / n as f64));
+
+        for i in 1..n - 1 {
+            let (a, b, c) = (base[0], base[i], base[i + 1]);
+            push(self.solid, cam, [(at(a, hi), top), (at(b, hi), top), (at(c, hi), top)]);
+            let shade = self.shade;
+            push(self.shadow, cam, [(cast(a, hi), shade), (cast(b, hi), shade), (cast(c, hi), shade)]);
+            if lo > 0.0 {
+                push(self.shadow, cam, [(cast(a, lo), shade), (cast(b, lo), shade), (cast(c, lo), shade)]);
+            }
+        }
+        for i in 0..n {
+            let (a, b) = (base[i], base[(i + 1) % n]);
+            // the side's outward normal
+            let (mut nx, mut ny) = (b.1 - a.1, a.0 - b.0);
+            let len = nx.hypot(ny).max(1e-9);
+            (nx, ny) = (nx / len, ny / len);
+            if nx * ((a.0 + b.0) / 2.0 - cx) + ny * ((a.1 + b.1) / 2.0 - cy) < 0.0 {
+                (nx, ny) = (-nx, -ny);
+            }
+            let lit = SIDE_AMBIENT + (1.0 - SIDE_AMBIENT) * (nx * lx + ny * ly).max(0.0) as f32;
+            let foot = FOOT + (1.0 - FOOT) * (lo / hi) as f32;
+            let (head, foot) = (colour.scaled(lit), colour.scaled(lit * foot));
+            quad(self.solid, cam, [(at(a, lo), foot), (at(b, lo), foot), (at(b, hi), head), (at(a, hi), head)]);
+            // its reflection hangs below the floor, fading with depth
+            let below = |(x, y): (f64, f64), h: f64| cam.view(x, y, h);
+            let (head_r, foot_r) = (head.scaled(fade(hi)), foot.scaled(fade(lo)));
+            quad(self.mirror, cam, [(below(a, lo), foot_r), (below(b, lo), foot_r), (below(b, hi), head_r), (below(a, hi), head_r)]);
+            let shade = self.shade;
+            quad(self.shadow, cam, [(cast(a, lo), shade), (cast(b, lo), shade), (cast(b, hi), shade), (cast(a, hi), shade)]);
+        }
+    }
 }
 
 fn polar(deg: f64, r: f64) -> (f64, f64) {
@@ -99,7 +190,7 @@ const MAX_ABERRATION: f64 = 0.03;
 const BLOOM: (f64, f64) = (0.25, 0.3);
 
 /// How strong the beat is now, 0 to 1.
-fn beat(w: &World) -> f64 {
+pub fn beat(w: &World) -> f64 {
     let (from, full) = BEAT_PULSE;
     ((w.view().pulse - from) / (full - from)).clamp(0.0, 1.0)
 }
@@ -133,6 +224,10 @@ pub struct Scene3d {
     pub verts: Vec<Vertex>,
     /// The player, kept apart so the effects leave it clear.
     pub player: Vec<Vertex>,
+    /// With 3D walls: see gpu::Frame.
+    pub mirror: Vec<Vertex>,
+    pub shadow: Vec<Vertex>,
+    pub solid: Vec<Vertex>,
     laid: Vec<(usize, Wall)>,
     scratch: Vec<f64>,
 }
@@ -144,6 +239,9 @@ impl Default for Scene3d {
             backdrop: 0.0,
             verts: Vec::new(),
             player: Vec::new(),
+            mirror: Vec::new(),
+            shadow: Vec::new(),
+            solid: Vec::new(),
             laid: Vec::new(),
             scratch: Vec::new(),
         }
@@ -151,7 +249,8 @@ impl Default for Scene3d {
 }
 
 impl Scene3d {
-    pub fn build(&mut self, w: &World, width: f64, height: f64) {
+    /// With `extrude`, the walls, the centre and the player stand up in 3D.
+    pub fn build(&mut self, w: &World, width: f64, height: f64, extrude: bool) {
         let pal = palette(w);
         let col = |slot: usize| {
             let glow = !matches!(slot, slot::BACKGROUND | slot::WEDGE | slot::ODD_WEDGE);
@@ -161,6 +260,9 @@ impl Scene3d {
         self.backdrop = col(slot::BACKGROUND).lightness().max(col(slot::WEDGE).lightness());
         self.verts.clear();
         self.player.clear();
+        self.mirror.clear();
+        self.shadow.clear();
+        self.solid.clear();
         let v = w.view();
         let (shape, player) = (w.shape(), w.player());
 
@@ -169,9 +271,15 @@ impl Scene3d {
         if v.zoom > 250.0 {
             depth += v.zoom * 4.0 - 1000.0;
         }
+        let (tilt, turn) = if extrude {
+            let t = w.t();
+            (TILT.0 + TILT.1 * (t * 0.011).sin(), TURN * (t * 0.0067).sin())
+        } else {
+            (0.0, 0.0)
+        };
         let cam = Camera {
-            cam: (-v.camangle).to_radians().sin_cos(),
-            xrot: (v.wobbleangle + if w.scene() == Scene::Run { v.pitch } else { 0.0 }).to_radians().sin_cos(),
+            cam: (-v.camangle - tilt).to_radians().sin_cos(),
+            xrot: (v.wobbleangle + turn + if w.scene() == Scene::Run { v.pitch } else { 0.0 }).to_radians().sin_cos(),
             title: (w.scene() == Scene::Title).then(|| (-55.0f64).to_radians().sin_cos()),
             lean: (w.scene() == Scene::StageSelect).then(|| (-player.tilt).to_radians().sin_cos()),
             depth,
@@ -183,12 +291,17 @@ impl Scene3d {
 
         let tri = |out: &mut Vec<Vertex>, a: V3, b: V3, c: V3, slot: usize| {
             let color = col(slot);
-            let (poly, n) = clip([a, b, c]);
-            for i in 1..n.saturating_sub(1) {
-                for p in [poly[0], poly[i], poly[i + 1]] {
-                    out.push(Vertex { pos: cam.project(p), uv: [0.0; 2], color });
-                }
-            }
+            push(out, &cam, [(a, color), (b, color), (c, color)]);
+        };
+        let la = w.t() * LIGHT_SPEED;
+        let flat = (1.0 - LIGHT_UP * LIGHT_UP).sqrt();
+        let mut solids = Solids {
+            mirror: &mut self.mirror,
+            shadow: &mut self.shadow,
+            solid: &mut self.solid,
+            cam: &cam,
+            light: [la.cos() * flat, la.sin() * flat, LIGHT_UP],
+            shade: Linear::from_srgb([SHADE; 3], 0.0),
         };
         let verts = &mut self.verts;
         let pt = |deg: f64, r: f64, z: f64| {
@@ -233,7 +346,13 @@ impl Scene3d {
             }
             _ => {}
         }
-        if (4..=6).contains(&n) {
+        if (4..=6).contains(&n) && extrude {
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let q = [polar(corner(i), r), polar(corner(j), r), polar(corner(j), r - CENTRE_BORDER), polar(corner(i), r - CENTRE_BORDER)];
+                solids.prism(&q, 0.0, CENTRE_H, col(slot::CENTRE), col(slot::CENTRE));
+            }
+        } else if (4..=6).contains(&n) {
             for i in 0..n {
                 let j = (i + 1) % n;
                 tri(verts, inner[i], inner[j], border[i], slot::CENTRE);
@@ -262,6 +381,10 @@ impl Scene3d {
                 (r + wl.dist / WALL_UNITS, r + (wl.dist + wl.len) / WALL_UNITS)
             };
             let colour = if wl.side == pside && !ending { slot::NEAR_WALLS } else { slot::WALLS } + (i & 1);
+            if extrude {
+                solids.prism(&[polar(a0, r0), polar(a1, r0), polar(a1, r1), polar(a0, r1)], 0.0, WALL_H, col(colour), col(colour));
+                continue;
+            }
             let (p0, p1, p2, p3) = (pt(a0, r0, 0.0), pt(a1, r0, 0.0), pt(a1, r1, 0.0), pt(a0, r1, 0.0));
             tri(verts, p0, p1, p3, colour);
             tri(verts, p1, p2, p3, colour);
@@ -288,6 +411,16 @@ impl Scene3d {
                 tri(&mut self.player, out[k], out[j], inn[k], slot::HIGHLIGHT);
                 tri(&mut self.player, out[j], inn[j], inn[k], slot::HIGHLIGHT);
             }
+        }
+        if extrude {
+            // as tall as the walls, in its flat colours (its highlight on top), and not glowing
+            let base = [0, 1, 2].map(|k| {
+                let (x, y) = polar(ta + 120.0 * k as f64, PLAYER_SIZE);
+                (px + x, py + y)
+            });
+            let dull = |slot: usize| Linear::from_srgb(pal[slot], 0.0);
+            solids.prism(&base, 0.0, WALL_H, dull(slot::HIGHLIGHT), dull(w.player_slot()));
+            return;
         }
         let body = |z| [0, 1, 2].map(|k| corner(k, PLAYER_SIZE, z));
         let [a, b, c] = body(0.0);

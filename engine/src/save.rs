@@ -39,6 +39,10 @@ pub struct Settings {
     pub aberration: bool,
     /// Make bright colours glow.
     pub bloom: bool,
+    /// Raise the walls into a 3D city, under an orbiting camera.
+    pub extrude: bool,
+    /// Run a fluid, stirred by the walls.
+    pub fluid: bool,
     /// Multisampling's samples per pixel: 1 for no antialiasing.
     pub antialiasing: u32,
     pub show_fps: bool,
@@ -58,6 +62,8 @@ impl Default for Settings {
             black_bars: false,
             aberration: false,
             bloom: false,
+            extrude: false,
+            fluid: false,
             antialiasing: 4,
             show_fps: false,
             speed: 1.0,

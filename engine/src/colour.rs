@@ -26,6 +26,17 @@ impl Linear {
         self.0
     }
 
+    /// Brighter or darker by `k`, keeping alpha.
+    pub fn scaled(self, k: f32) -> Linear {
+        let [r, g, b, a] = self.0;
+        Linear([r * k, g * k, b * k, a])
+    }
+
+    /// `k` of the way from `self` to `to`.
+    pub fn lerp(self, to: Linear, k: f32) -> Linear {
+        Linear(std::array::from_fn(|i| self.0[i] + (to.0[i] - self.0[i]) * k))
+    }
+
     /// Perceived lightness, 0 to 1: Oklab's L.
     #[allow(clippy::excessive_precision)] // Oklab's published coefficients, as in bloom.wgsl
     pub fn lightness(self) -> f32 {
